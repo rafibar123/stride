@@ -1,0 +1,3 @@
+/* App-level styles are inlined in App.tsx via <style> tags for co-location.
+   Component styles are also co-located via <style> tags.
+   Global reset and CSS variables live in index.css. */

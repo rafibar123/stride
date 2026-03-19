@@ -1,0 +1,384 @@
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
+import math
+import numpy as np
+import cv2
+
+
+PITCH_ZONES = {
+    "defensive_third": (0.0, 35.0),
+    "middle_third": (35.0, 70.0),
+    "attacking_third": (70.0, 105.0),
+}
+
+
+@dataclass
+class PitchConfig:
+    pitch_length_m: float = 105.0
+    pitch_width_m: float = 68.0
+    min_green_ratio: float = 0.12
+    sample_every_n_frames: int = 10
+    use_bottom_center: bool = True
+    # Set False for angled / side-view cameras (e.g. TikTok).
+    # Homography from a bounding-box estimate is unreliable at angles;
+    # disabling it forces pixel-based distance scaling instead.
+    enabled: bool = False
+
+
+class PitchCalibrator:
+    """
+    כיול מגרש baseline מקצועי ויציב:
+    - מזהה אזור דשא
+    - בונה מלבן מגרש מקורב
+    - מחשב homography למגרש סטנדרטי (105x68)
+    - ממיר נקודות פיקסל -> מטרים
+    """
+
+    def __init__(self, config: PitchConfig):
+        self.config = config
+        self.h_matrix: Optional[np.ndarray] = None
+        self.last_src_quad: Optional[np.ndarray] = None
+        self.last_dst_quad: Optional[np.ndarray] = None
+
+    def _green_mask(self, frame: np.ndarray) -> np.ndarray:
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        lower = np.array([30, 25, 25], dtype=np.uint8)
+        upper = np.array([95, 255, 255], dtype=np.uint8)
+
+        mask = cv2.inRange(hsv, lower, upper)
+
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        return mask
+
+    def _largest_contour_bbox(self, mask: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        c = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(c)
+        h, w = mask.shape[:2]
+
+        if area < h * w * self.config.min_green_ratio:
+            return None
+
+        x, y, bw, bh = cv2.boundingRect(c)
+        return x, y, bw, bh
+
+    def estimate_from_frame(self, frame: np.ndarray) -> bool:
+        if frame is None or frame.size == 0:
+            return False
+
+        h, w = frame.shape[:2]
+        mask = self._green_mask(frame)
+        bbox = self._largest_contour_bbox(mask)
+
+        if bbox is None:
+            # fallback: use image margins as approximate pitch
+            src = np.array([
+                [w * 0.05, h * 0.15],
+                [w * 0.95, h * 0.15],
+                [w * 0.95, h * 0.95],
+                [w * 0.05, h * 0.95],
+            ], dtype=np.float32)
+        else:
+            x, y, bw, bh = bbox
+
+            # trapezoid approximation - perspective pitch
+            src = np.array([
+                [x + bw * 0.08, y + bh * 0.06],
+                [x + bw * 0.92, y + bh * 0.06],
+                [x + bw * 0.98, y + bh * 0.98],
+                [x + bw * 0.02, y + bh * 0.98],
+            ], dtype=np.float32)
+
+        dst = np.array([
+            [0.0, 0.0],
+            [self.config.pitch_length_m, 0.0],
+            [self.config.pitch_length_m, self.config.pitch_width_m],
+            [0.0, self.config.pitch_width_m],
+        ], dtype=np.float32)
+
+        h_matrix = cv2.getPerspectiveTransform(src, dst)
+        if h_matrix is None:
+            return False
+
+        self.h_matrix = h_matrix
+        self.last_src_quad = src
+        self.last_dst_quad = dst
+        return True
+
+    def is_ready(self) -> bool:
+        return self.h_matrix is not None
+
+    def pixel_to_pitch(self, x: float, y: float) -> Optional[Tuple[float, float]]:
+        if self.h_matrix is None:
+            return None
+
+        pt = np.array([[[x, y]]], dtype=np.float32)
+        transformed = cv2.perspectiveTransform(pt, self.h_matrix)
+
+        px = float(transformed[0, 0, 0])
+        py = float(transformed[0, 0, 1])
+
+        px = max(0.0, min(self.config.pitch_length_m, px))
+        py = max(0.0, min(self.config.pitch_width_m, py))
+
+        return px, py
+
+    def bbox_anchor(self, bbox: List[float]) -> Tuple[float, float]:
+        x1, y1, x2, y2 = bbox
+        if self.config.use_bottom_center:
+            return (float((x1 + x2) / 2.0), float(y2))
+        return (float((x1 + x2) / 2.0), float((y1 + y2) / 2.0))
+
+    def export_meta(self) -> Dict:
+        return {
+            "ready": self.is_ready(),
+            "pitch_length_m": self.config.pitch_length_m,
+            "pitch_width_m": self.config.pitch_width_m,
+            "src_quad": None if self.last_src_quad is None else self.last_src_quad.tolist(),
+            "dst_quad": None if self.last_dst_quad is None else self.last_dst_quad.tolist(),
+        }
+
+
+# Fastest recorded human sprint ~10.4 m/s (Usain Bolt).
+# 11 m/s (≈40 km/h) is the hard ceiling — anything above this is a tracking
+# artifact (ID swap, bad homography jump) and is discarded entirely.
+MAX_REALISTIC_SPEED_MPS = 10.0   # 36 km/h — absolute human sprint ceiling
+
+# Youth players rarely exceed 18 km/h in a sprint.
+SPRINT_THRESHOLD_MPS    = 5.0    # 18 km/h
+SPRINT_MIN_DURATION_S   = 0.5    # sprint must be sustained ≥ 0.5 s to count
+
+
+class PositionKalmanFilter:
+    """2D constant-velocity Kalman filter for smoothing player pixel positions."""
+
+    def __init__(self, process_noise: float = 1.0, measurement_noise: float = 5.0):
+        # State: [x, y, vx, vy]
+        self.F = np.eye(4, dtype=np.float64)
+        self.F[0, 2] = 1.0
+        self.F[1, 3] = 1.0
+        self.H = np.zeros((2, 4), dtype=np.float64)
+        self.H[0, 0] = 1.0
+        self.H[1, 1] = 1.0
+        self.Q = np.eye(4, dtype=np.float64) * process_noise
+        self.R = np.eye(2, dtype=np.float64) * measurement_noise
+        self.P = np.eye(4, dtype=np.float64) * 500.0
+        self.x: Optional[np.ndarray] = None
+
+    def update(self, x: float, y: float) -> Tuple[float, float]:
+        z = np.array([[x], [y]], dtype=np.float64)
+        if self.x is None:
+            self.x = np.array([[x], [y], [0.0], [0.0]], dtype=np.float64)
+            return x, y
+        x_pred = self.F @ self.x
+        P_pred = self.F @ self.P @ self.F.T + self.Q
+        S = self.H @ P_pred @ self.H.T + self.R
+        K = P_pred @ self.H.T @ np.linalg.inv(S)
+        self.x = x_pred + K @ (z - self.H @ x_pred)
+        self.P = (np.eye(4) - K @ self.H) @ P_pred
+        return float(self.x[0, 0]), float(self.x[1, 0])
+
+# Pixel-to-metre scale for angled / side-view cameras.
+# Calibrated from debug frames: centre circle (~18.3 m diameter) spans
+# ~170 px horizontally at mid-field → 18.3/170 ≈ 0.108 m/px.
+# Using 0.09 (conservative) to account for perspective compression at angles.
+# Tune this value if your camera distance / zoom differs.
+DEFAULT_METERS_PER_PIXEL = 0.09
+
+
+class WorldMetrics:
+    """
+    מחשב מרחקים ומהירויות בעולם אמיתי על בסיס נקודות מגרש.
+    """
+
+    @staticmethod
+    def _step_distance(p0: Dict, p1: Dict, mpp: float) -> float:
+        """Return real-world distance (metres) between two track points.
+
+        Uses pitch-calibrated coordinates when available; falls back to
+        pixel-centre distance scaled by *mpp* (metres-per-pixel) for
+        angled / uncalibrated cameras.
+        """
+        if "pitch_x" in p0 and "pitch_x" in p1:
+            dx = p1["pitch_x"] - p0["pitch_x"]
+            dy = p1["pitch_y"] - p0["pitch_y"]
+        else:
+            dx = (p1["x"] - p0["x"]) * mpp
+            dy = (p1["y"] - p0["y"]) * mpp
+        return float((dx * dx + dy * dy) ** 0.5)
+
+    def compute_track_metrics(self, tracks: List[Dict], fps: float,
+                              meters_per_pixel: float = DEFAULT_METERS_PER_PIXEL) -> Dict:
+        if not tracks:
+            return {
+                "player_count": 0,
+                "total_distance_m": 0.0,
+                "max_speed_mps": 0.0,
+                "sprint_count": 0,
+            }
+
+        by_track: Dict = {}
+        for tr in tracks:
+            by_track.setdefault(tr["track_id"], []).append(tr)
+
+        total_distance = 0.0
+        max_speed = 0.0
+        sprint_count = 0
+
+        for tid, points in by_track.items():
+            points = sorted(points, key=lambda p: p["frame"])
+            for i in range(1, len(points)):
+                p0, p1 = points[i - 1], points[i]
+                dist = self._step_distance(p0, p1, meters_per_pixel)
+
+                dt_frames = max(1, p1["frame"] - p0["frame"])
+                dt = dt_frames / max(fps, 1e-6)
+                speed = dist / max(dt, 1e-6)
+
+                # discard physically impossible steps — tracking ID swaps or
+                # homography / scale artifacts
+                if speed > MAX_REALISTIC_SPEED_MPS:
+                    continue
+
+                total_distance += dist
+                max_speed = max(max_speed, speed)
+
+                if speed >= SPRINT_THRESHOLD_MPS:
+                    sprint_count += 1
+
+        return {
+            "player_count": len(by_track),
+            "total_distance_m": round(total_distance, 2),
+            "max_speed_mps": round(max_speed, 2),
+            "sprint_count": int(sprint_count),
+        }
+
+    def heatmap_pitch_points(self, tracks: List[Dict]) -> List[List[float]]:
+        out = []
+        for tr in tracks:
+            if "pitch_x" in tr and "pitch_y" in tr:
+                out.append([round(float(tr["pitch_x"]), 3), round(float(tr["pitch_y"]), 3)])
+        return out
+
+    def _zone_for_x(self, x: float) -> str:
+        for zone_name, (lo, hi) in PITCH_ZONES.items():
+            if lo <= x < hi:
+                return zone_name
+        return "attacking_third"
+
+    @staticmethod
+    def _rolling_median(values: List[float], window: int = 5) -> List[float]:
+        """Apply a rolling median of *window* size to *values*."""
+        if not values:
+            return []
+        half = window // 2
+        out = []
+        for i in range(len(values)):
+            lo = max(0, i - half)
+            hi = min(len(values), i + half + 1)
+            out.append(float(np.median(values[lo:hi])))
+        return out
+
+    def compute_per_player_metrics(self, tracks: List[Dict], fps: float,
+                                   meters_per_pixel: float = DEFAULT_METERS_PER_PIXEL) -> List[Dict]:
+        """
+        Returns per-player stats: distance_m, avg_speed_mps, max_speed_mps,
+        sprint_count, zone_frames.
+
+        Improvements over the naive approach:
+        - Kalman filter smooths noisy pixel positions before distance computation.
+        - Rolling median over 5-frame windows reduces per-step speed noise.
+        - Sprints only counted when sustained ≥ SPRINT_MIN_DURATION_S seconds.
+        """
+        if not tracks:
+            return []
+
+        by_track: Dict[int, List[Dict]] = {}
+        for tr in tracks:
+            by_track.setdefault(tr["track_id"], []).append(tr)
+
+        results = []
+        for tid, points in by_track.items():
+            points = sorted(points, key=lambda p: p["frame"])
+
+            # ── 1. Kalman-smooth pixel positions ─────────────────────────────
+            kf = PositionKalmanFilter()
+            smoothed: List[Dict] = []
+            for pt in points:
+                sx, sy = kf.update(pt["x"], pt["y"])
+                sp = dict(pt)
+                sp["x"] = sx
+                sp["y"] = sy
+                smoothed.append(sp)
+
+            # ── 2. Per-step distances, raw speeds, and time deltas ───────────
+            zone_frames: Dict[str, int] = {z: 0 for z in PITCH_ZONES}
+            raw_dists: List[float] = []
+            raw_speeds: List[float] = []
+            raw_dts: List[float] = []
+
+            for i, pt in enumerate(smoothed):
+                if "pitch_x" in pt:
+                    zone_frames[self._zone_for_x(pt["pitch_x"])] += 1
+                if i == 0:
+                    continue
+
+                p0, p1 = smoothed[i - 1], smoothed[i]
+                dist = self._step_distance(p0, p1, meters_per_pixel)
+                dt_frames = max(1, p1["frame"] - p0["frame"])
+                dt = dt_frames / max(fps, 1e-6)
+                spd = dist / max(dt, 1e-6)
+
+                if spd > MAX_REALISTIC_SPEED_MPS:
+                    continue  # tracking artifact — discard step
+
+                raw_dists.append(dist)
+                raw_speeds.append(spd)
+                raw_dts.append(dt)
+
+            # ── 3. Rolling-median speed (5-frame window) ─────────────────────
+            smoothed_speeds = self._rolling_median(raw_speeds, window=5)
+
+            total_dist = sum(raw_dists)
+            max_spd = max(smoothed_speeds) if smoothed_speeds else 0.0
+            avg_spd = sum(smoothed_speeds) / len(smoothed_speeds) if smoothed_speeds else 0.0
+
+            # ── 4. Sustained sprint detection (≥ SPRINT_MIN_DURATION_S) ──────
+            sprint_count = 0
+            in_sprint = False
+            sprint_duration = 0.0
+            for spd, dt in zip(smoothed_speeds, raw_dts):
+                if spd >= SPRINT_THRESHOLD_MPS:
+                    if not in_sprint:
+                        in_sprint = True
+                        sprint_duration = 0.0
+                    sprint_duration += dt
+                else:
+                    if in_sprint and sprint_duration >= SPRINT_MIN_DURATION_S:
+                        sprint_count += 1
+                    in_sprint = False
+                    sprint_duration = 0.0
+            if in_sprint and sprint_duration >= SPRINT_MIN_DURATION_S:
+                sprint_count += 1
+
+            team_id = points[-1].get("team_id") if points else None
+            results.append({
+                "track_id": tid,
+                "team_id": team_id,
+                "distance_m": round(total_dist, 2),
+                "avg_speed_mps": round(avg_spd, 3),
+                "max_speed_mps": round(max_spd, 3),
+                "sprint_count": sprint_count,
+                "zone_frames": zone_frames,
+                "total_frames": len(points),
+            })
+
+        results.sort(key=lambda p: p["distance_m"], reverse=True)
+        return results

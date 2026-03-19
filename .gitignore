@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.env.*
+*.env
+venv/
+.venv/
+env/
+
+# Model weights (large binary files — download at runtime)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.weights
+
+# Temp / debug outputs
+/tmp/
+heatmap.jpg
+debug_frame_*.jpg
+*.mp4
+*.avi
+*.mov
+
+# Analysis artifacts
+analysis_results.json
+outputs/
+output/
+
+# Node / frontend build
+node_modules/
+frontend/dist/
+frontend/build/
+.pnp
+.pnp.js
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Ultralytics cache
+runs/
