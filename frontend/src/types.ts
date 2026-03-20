@@ -115,6 +115,14 @@ export interface PlayerProfile {
   teamName: string;
 }
 
+export interface ManualStats {
+  passes_made: number;
+  passes_successful: number;
+  shots_on_goal: number;
+  ball_recoveries: number;
+  lost_balls: number;
+}
+
 export type AnalysisStage =
   | 'idle'
   | 'profiling'

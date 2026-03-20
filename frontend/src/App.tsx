@@ -9,9 +9,10 @@ import PlayerRating from './components/PlayerRating';
 import PlayerStats from './components/PlayerStats';
 import PassStats from './components/PassStats';
 import MatchAnalysis from './components/MatchAnalysis';
+import ManualStatsModal from './components/ManualStatsModal';
 import HeatmapPitch from './components/HeatmapPitch';
 
-import type { AnalysisResult, AnalysisStage, PlayerProfile } from './types';
+import type { AnalysisResult, AnalysisStage, ManualStats, PlayerProfile } from './types';
 
 const API = 'http://127.0.0.1:8000';
 
@@ -25,6 +26,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [frameSkip, setFrameSkip] = useState(10);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = () => {
@@ -101,7 +104,7 @@ export default function App() {
               done(() => {
                 setProgress(100);
                 setBackendStage('done');
-                setTimeout(() => { setResult(r); setStage('done'); }, 300);
+                setTimeout(() => { setResult(r); setStage('done'); setShowManualModal(true); }, 300);
                 resolve();
               });
             } else if (s === 'error') {
@@ -155,6 +158,25 @@ export default function App() {
     setResult(null);
     setError(null);
     setShowAdvanced(false);
+    setShowManualModal(false);
+  };
+
+  const handleManualSubmit = async (manual_stats: ManualStats) => {
+    if (!result) return;
+    setReanalyzing(true);
+    try {
+      const res = await fetch(`${API}/reanalyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ result, manual_stats }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setResult((prev) => prev ? { ...prev, match_analysis: updated } : prev);
+      }
+    } catch { /* keep existing analysis */ }
+    setReanalyzing(false);
+    setShowManualModal(false);
   };
 
   useEffect(() => () => stopPolling(), []);
@@ -362,6 +384,14 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {showManualModal && (
+        <ManualStatsModal
+          onSubmit={handleManualSubmit}
+          onSkip={() => setShowManualModal(false)}
+          loading={reanalyzing}
+        />
+      )}
 
       <style>{`
         .app { min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); }

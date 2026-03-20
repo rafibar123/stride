@@ -12,7 +12,7 @@ Set ANTHROPIC_API_KEY to enable the AI-generated path.
 import json
 import logging
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 log = logging.getLogger("analysis")
 
@@ -27,12 +27,17 @@ def compute_actions(
     player_metrics: Dict,
     pass_stats: Dict,
     fps: float = 25.0,
+    manual_stats: Optional[Dict] = None,
 ) -> Dict:
     """
     Compute positive and negative actions from tracking data — no AI needed.
 
-    Positive: successful passes, sprint bursts, good positioning, high work rate
-    Negative: missed passes, wrong positioning, low activity, poor endurance
+    Positive: successful passes, sprint bursts, good positioning, high work rate,
+              ball recoveries (manual), shots on goal (manual)
+    Negative: missed passes, wrong positioning, low activity, lost balls (manual)
+
+    manual_stats keys (all optional):
+        passes_made, passes_successful, shots_on_goal, ball_recoveries, lost_balls
     """
     sprint_count = int(player_metrics.get("sprint_count", 0))
     avg_spd      = float(player_metrics.get("avg_speed_mps", 0.0))
@@ -48,11 +53,19 @@ def compute_actions(
     mid_pct = zm / zt
     att_pct = za / zt
 
-    accurate     = int(pass_stats.get("accurate", 0))
-    failed       = int(pass_stats.get("failed", 0))
-    total_passes = int(pass_stats.get("total", 0))
-
     duration_min = (total_frames / max(fps, 1.0)) / 60.0
+
+    # ── Pass counts: manual overrides AI-detected when provided ───────────────
+    ms = manual_stats or {}
+    manual_total = int(ms.get("passes_made", 0))
+    manual_acc   = int(ms.get("passes_successful", 0))
+
+    if manual_total > 0:
+        accurate = min(manual_acc, manual_total)
+        failed   = manual_total - accurate
+    else:
+        accurate = int(pass_stats.get("accurate", 0))
+        failed   = int(pass_stats.get("failed",   0))
 
     pos: List[Dict] = []
     neg: List[Dict] = []
@@ -62,6 +75,14 @@ def compute_actions(
         pos.append({"type": "successful_pass",  "label": "Successful pass"})
     for _ in range(failed):
         neg.append({"type": "missed_pass",       "label": "Missed / lost pass"})
+
+    # ── Manual-only items ─────────────────────────────────────────────────────
+    for _ in range(int(ms.get("ball_recoveries", 0))):
+        pos.append({"type": "ball_recovery",    "label": "Ball recovery"})
+    for _ in range(int(ms.get("shots_on_goal", 0))):
+        pos.append({"type": "shot_on_goal",     "label": "Shot on goal"})
+    for _ in range(int(ms.get("lost_balls", 0))):
+        neg.append({"type": "lost_ball",         "label": "Lost the ball"})
 
     # ── Sprint bursts ─────────────────────────────────────────────────────────
     for _ in range(sprint_count):
@@ -100,9 +121,16 @@ def compute_actions(
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
-def generate_match_analysis(result_dict: Dict) -> Dict:
+def generate_match_analysis(
+    result_dict: Dict,
+    manual_stats: Optional[Dict] = None,
+) -> Dict:
     """
     Build the full match analysis dict from a completed pipeline result.
+
+    manual_stats (optional): player-reported numbers that override/extend
+        AI-detected data — keys: passes_made, passes_successful,
+        shots_on_goal, ball_recoveries, lost_balls.
 
     Returns:
     {
@@ -119,12 +147,14 @@ def generate_match_analysis(result_dict: Dict) -> Dict:
     fps         = float(result_dict.get("fps", 25.0))
     player_info = result_dict.get("player_info", {}) or {}
 
-    actions = compute_actions(player, pass_stats, fps)
+    actions = compute_actions(player, pass_stats, fps, manual_stats)
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if api_key:
         try:
-            summary, recs = _call_claude(player, pass_stats, rating, actions, player_info, fps)
+            summary, recs = _call_claude(
+                player, pass_stats, rating, actions, player_info, fps, manual_stats
+            )
             return {
                 "actions":         actions,
                 "summary":         summary,
@@ -134,7 +164,7 @@ def generate_match_analysis(result_dict: Dict) -> Dict:
         except Exception as exc:
             log.warning("Claude API call failed — using rule-based fallback: %s", exc)
 
-    summary, recs = _rule_based(player, pass_stats, rating, fps)
+    summary, recs = _rule_based(player, pass_stats, rating, fps, manual_stats)
     return {
         "actions":         actions,
         "summary":         summary,
@@ -152,6 +182,7 @@ def _call_claude(
     actions: Dict,
     player_info: Dict,
     fps: float,
+    manual_stats: Optional[Dict] = None,
 ) -> Tuple[List[str], List[Dict]]:
     import anthropic
 
@@ -167,18 +198,31 @@ def _call_claude(
     za  = zone_frames.get("attacking_third", 0)
     zt  = max(zd + zm + za, 1)
 
-    pass_total    = int(pass_stats.get("total", 0))
-    pass_accurate = int(pass_stats.get("accurate", 0))
-    pass_pct      = float(pass_stats.get("accuracy_pct", 0.0))
-    has_pass      = pass_total >= 3
-
     player_name = player_info.get("name", "the player") or "the player"
     team_name   = player_info.get("teamName", "") or ""
 
-    pass_line = (
-        f"{pass_accurate}/{pass_total} passes accurate ({pass_pct:.0f}%)"
-        if has_pass else "Ball contact not detected"
-    )
+    # Resolve pass line — prefer manual input if provided
+    ms = manual_stats or {}
+    manual_total = int(ms.get("passes_made", 0))
+    manual_acc   = int(ms.get("passes_successful", 0))
+    if manual_total > 0:
+        manual_pct = round(manual_acc / manual_total * 100)
+        pass_line  = f"{manual_acc}/{manual_total} passes accurate ({manual_pct}%) [player-reported]"
+        has_pass   = True
+    else:
+        pass_total    = int(pass_stats.get("total", 0))
+        pass_accurate = int(pass_stats.get("accurate", 0))
+        pass_pct      = float(pass_stats.get("accuracy_pct", 0.0))
+        has_pass      = pass_total >= 3
+        pass_line = (
+            f"{pass_accurate}/{pass_total} passes accurate ({pass_pct:.0f}%)"
+            if has_pass else "Ball contact not detected"
+        )
+
+    shots_line     = f"Shots on goal: {ms['shots_on_goal']}" if ms.get("shots_on_goal") else ""
+    recovery_line  = f"Ball recoveries: {ms['ball_recoveries']}" if ms.get("ball_recoveries") else ""
+    lostball_line  = f"Lost balls: {ms['lost_balls']}" if ms.get("lost_balls") else ""
+    manual_block   = "\n".join(l for l in [shots_line, recovery_line, lostball_line] if l)
 
     stats_text = f"""Player: {player_name}{(' — ' + team_name) if team_name else ''}
 Duration analysed: {duration_min:.1f} min
@@ -186,7 +230,7 @@ Distance covered: {dist_m:.0f} m ({dist_m / 1000:.2f} km)
 Top speed: {max_kmh:.1f} km/h  |  Average speed: {avg_kmh:.1f} km/h
 Sprint bursts (≥18 km/h): {sprint_count}
 Zone: {zd / zt * 100:.0f}% def / {zm / zt * 100:.0f}% mid / {za / zt * 100:.0f}% att
-Passing: {pass_line}
+Passing: {pass_line}{chr(10) + manual_block if manual_block else ''}
 Actions: {actions['positive_count']} positive  /  {actions['negative_count']} negative
 Rating: {rating.get('overall', 0):.1f}/10  \
 (Phy {rating.get('physical', 0):.1f}  Att {rating.get('attacking', 0):.1f}  \
@@ -274,6 +318,7 @@ def _rule_based(
     pass_stats: Dict,
     rating: Dict,
     fps: float,
+    manual_stats: Optional[Dict] = None,
 ) -> Tuple[List[str], List[Dict]]:
     total_frames = max(int(player.get("total_frames", 1)), 1)
     duration_min = (total_frames / max(fps, 1.0)) / 60.0
@@ -290,10 +335,20 @@ def _rule_based(
     mid_pct = zm / zt * 100
     att_pct = za / zt * 100
 
-    pass_total    = int(pass_stats.get("total", 0))
-    pass_accurate = int(pass_stats.get("accurate", 0))
-    pass_pct      = float(pass_stats.get("accuracy_pct", 0.0))
-    has_pass      = pass_total >= 3
+    # Pass data — prefer manual if provided
+    ms = manual_stats or {}
+    manual_total = int(ms.get("passes_made", 0))
+    manual_acc   = int(ms.get("passes_successful", 0))
+    if manual_total > 0:
+        pass_total    = manual_total
+        pass_accurate = min(manual_acc, manual_total)
+        pass_pct      = pass_accurate / pass_total * 100
+        has_pass      = True
+    else:
+        pass_total    = int(pass_stats.get("total", 0))
+        pass_accurate = int(pass_stats.get("accurate", 0))
+        pass_pct      = float(pass_stats.get("accuracy_pct", 0.0))
+        has_pass      = pass_total >= 3
 
     overall  = float(rating.get("overall", 0.0))
     dist_km  = dist_m / 1000

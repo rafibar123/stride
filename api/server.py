@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import cv2
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -274,6 +275,24 @@ def get_progress(job_id: str):
     if info is None:
         return {"pct": 0, "stage": "queued"}
     return info
+
+
+class ReanalyzeRequest(BaseModel):
+    result: dict
+    manual_stats: dict
+
+
+@app.post("/reanalyze")
+async def reanalyze(body: ReanalyzeRequest):
+    """
+    Re-run match analysis with combined AI-detected + player-reported stats.
+    Returns an updated match_analysis dict.
+    """
+    loop = asyncio.get_event_loop()
+    match_analysis = await loop.run_in_executor(
+        None, generate_match_analysis, body.result, body.manual_stats
+    )
+    return match_analysis
 
 
 @app.post("/report")
