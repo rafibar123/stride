@@ -79,8 +79,15 @@ function AttributeBar({ label, value, detail }: BarProps) {
 }
 
 export default function PlayerRating({ rating, playerName }: Props) {
-  const { overall, physical, attacking, positioning, pressing, breakdown } = rating;
+  const { overall, physical, attacking, positioning, pressing, passing, breakdown } = rating;
   const overallColor = ratingColor(overall);
+
+  const passTotal    = breakdown.pass_total ?? 0;
+  const passAccurate = breakdown.pass_accurate ?? 0;
+  const passPct      = breakdown.pass_accuracy_pct ?? 0;
+  const passDetail   = passTotal >= 3
+    ? `${passAccurate}/${passTotal} passes · ${passPct.toFixed(0)}% accuracy`
+    : 'Insufficient ball contact data';
 
   const attrs: BarProps[] = [
     {
@@ -102,6 +109,11 @@ export default function PlayerRating({ rating, playerName }: Props) {
       label: 'Pressing',
       value: pressing,
       detail: `${breakdown.sprints_per_min.toFixed(1)} closing runs/min · ${breakdown.def_third_pct}% def. work`,
+    },
+    {
+      label: 'Passing',
+      value: passing ?? 6,
+      detail: passDetail,
     },
   ];
 
@@ -132,6 +144,7 @@ export default function PlayerRating({ rating, playerName }: Props) {
             { k: 'ATT', v: attacking },
             { k: 'POS', v: positioning },
             { k: 'PRS', v: pressing },
+            { k: 'PAS', v: passing ?? 6 },
           ].map(({ k, v }) => (
             <div key={k} className="pr-mini">
               <span className="pr-mini-val" style={{ color: ratingColor(v) }}>{v.toFixed(1)}</span>
@@ -239,7 +252,7 @@ export default function PlayerRating({ rating, playerName }: Props) {
 
         /* mini 4-score grid */
         .pr-card-mini-grid {
-          display: grid; grid-template-columns: repeat(4, 1fr);
+          display: grid; grid-template-columns: repeat(5, 1fr);
           gap: 8px; width: 100%; z-index: 1;
           border-top: 1px solid rgba(255,255,255,0.07);
           padding-top: 14px;

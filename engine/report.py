@@ -389,14 +389,35 @@ def _draw_cover(c, W, H, data: Dict):
     card_h = 3.2 * cm
     card_y = cards_top - card_h - 0.3 * cm
 
+    # ── pull pass stats ───────────────────────────────────────────────────
+    ps            = data.get("pass_stats", {}) or {}
+    pass_total    = int(ps.get("total", 0))
+    pass_accurate = int(ps.get("accurate", 0))
+    pass_pct      = float(ps.get("accuracy_pct", 0.0))
+    has_pass_data = pass_total >= 3
+
+    if has_pass_data:
+        if pass_pct >= 80: pass_acc_rgb = _GREEN
+        elif pass_pct >= 60: pass_acc_rgb = (0.984, 0.749, 0.141)
+        else: pass_acc_rgb = (0.973, 0.431, 0.431)
+        pass_val  = f"{pass_accurate}/{pass_total}"
+        pass_unit = f"{pass_pct:.0f}% accurate"
+    else:
+        pass_acc_rgb = (0.220, 0.741, 0.973)
+        pass_val  = "N/A"
+        pass_unit = "no ball data"
+
     stats = [
-        (dist_val,                         dist_unit,   "Distance Run"),
-        (f"{max_spd_mps * 3.6:.1f}",       "km/h",      "Top Speed"),
-        (f"{avg_spd_mps * 3.6:.1f}",       "km/h",      "Avg Speed"),
-        (str(sprints),                     "bursts",    "Sprint Count"),
+        (dist_val,                         dist_unit,         "Distance Run"),
+        (f"{max_spd_mps * 3.6:.1f}",       "km/h",            "Top Speed"),
+        (f"{avg_spd_mps * 3.6:.1f}",       "km/h",            "Avg Speed"),
+        (str(sprints),                     "bursts",           "Sprint Count"),
+        (pass_val,                         pass_unit,          "Passes"),
     ]
-    # Accent colours per card
-    accents = [_GREEN, _GREEN, _GREEN, _GREEN]
+    accents = [_GREEN, _GREEN, _GREEN, _GREEN, pass_acc_rgb]
+
+    # 5 cards — slightly narrower
+    card_w = (inner_w - 4 * card_gap) / 5
 
     for i, ((val, unit, lbl), acc) in enumerate(zip(stats, accents)):
         cx = margin + i * (card_w + card_gap)
@@ -465,17 +486,19 @@ def _draw_cover(c, W, H, data: Dict):
         _fill(c, _TDIM)
         c.drawString(ov_x + 68, ov_y + 4, "Overall Performance Score")
 
-        # 4 sub-score attribute bars
+        # 5 sub-score attribute bars (including Passing)
+        passing = rating.get("passing", 6.0)
         bar_items = [
             ("Physical",    physical),
             ("Attacking",   attacking),
             ("Positioning", positioning),
             ("Pressing",    pressing),
+            ("Passing",     passing),
         ]
-        bar_x      = ov_x + 68
-        bar_w      = inner_w - 68 - 0.1 * cm
-        bar_height = 0.28 * cm
-        bar_gap    = 0.50 * cm
+        bar_x      = ov_x + 72
+        bar_w      = inner_w - 72 - 0.1 * cm
+        bar_height = 0.26 * cm
+        bar_gap    = 0.44 * cm
         bar_start  = ov_y - 0.1 * cm
 
         for i, (lbl, val) in enumerate(bar_items):
@@ -502,7 +525,7 @@ def _draw_cover(c, W, H, data: Dict):
             _fill(c, rgb)
             c.drawString(bar_x + bar_w + 4, by - bar_height + 2, f"{val:.1f}")
 
-        rat_consumed = ov_size * 0.8 + bar_gap * 4 + 0.6 * cm
+        rat_consumed = ov_size * 0.8 + bar_gap * 5 + 0.6 * cm
     else:
         rat_consumed = 0.0
 
@@ -677,6 +700,7 @@ def _draw_details_page(c, W, H, data: Dict, heatmap_tmp: Optional[str]):
 
     dur_str = f"{int(dur_s // 60)}m {int(dur_s % 60)}s"
     rat    = data.get("rating", {})
+    ps_d   = data.get("pass_stats", {}) or {}
     rows: list = []
     if rat:
         rows.append(("Overall Rating",
@@ -684,7 +708,8 @@ def _draw_details_page(c, W, H, data: Dict, heatmap_tmp: Optional[str]):
                      f"Phy {rat.get('physical',0):.1f} · "
                      f"Att {rat.get('attacking',0):.1f} · "
                      f"Pos {rat.get('positioning',0):.1f} · "
-                     f"Prs {rat.get('pressing',0):.1f}"))
+                     f"Prs {rat.get('pressing',0):.1f} · "
+                     f"Pas {rat.get('passing',0):.1f}"))
     if pi.get("name"):
         rows.append(("Player", pi["name"]))
     if pi.get("number"):
@@ -706,6 +731,12 @@ def _draw_details_page(c, W, H, data: Dict, heatmap_tmp: Optional[str]):
         ("Middle third",             f"{zm/zt*100:.0f}% of tracked time"),
         ("Attacking third",          f"{za/zt*100:.0f}% of tracked time"),
     ]
+    # Pass stats row
+    pt = int(ps_d.get("total", 0))
+    pa = int(ps_d.get("accurate", 0))
+    pp = float(ps_d.get("accuracy_pct", 0.0))
+    if pt >= 3:
+        rows.append(("Passes (accurate / total)", f"{pa} / {pt}  ({pp:.0f}%)"))
 
     row_h = 0.52 * cm
     col_w = inner_w / 2
@@ -724,6 +755,24 @@ def _draw_details_page(c, W, H, data: Dict, heatmap_tmp: Optional[str]):
         _fill(c, _TEXT)
         c.drawRightString(margin + inner_w - 8, row_y - row_h + 8, value)
         row_y -= row_h + 1
+
+    # ── coach note box ─────────────────────────────────────────────────────
+    coach = ps_d.get("coach_note", "")
+    if coach and row_y > 4.0 * cm:
+        box_h = 1.15 * cm
+        box_y = row_y - 0.4 * cm - box_h
+        _rounded_rect(c, margin, box_y, inner_w, box_h, r=6,
+                      fill_rgb=_GDIM, stroke_rgb=_GREEN, stroke_w=0.5)
+        # ⚽ icon
+        c.setFont("Helvetica-Bold", 10)
+        _fill(c, _GREEN)
+        c.drawString(margin + 10, box_y + box_h / 2 - 4, "\u26bd")
+        # note text (truncate to fit single line)
+        max_chars = int(inner_w / 4.8)
+        display_note = coach if len(coach) <= max_chars else coach[:max_chars - 1] + "…"
+        c.setFont("Helvetica", 8)
+        _fill(c, _TEXT)
+        c.drawString(margin + 26, box_y + box_h / 2 - 4, display_note)
 
     # ── footer ────────────────────────────────────────────────────────────
     _draw_green_line(c, margin, 1.35 * cm, inner_w, thickness=0.4)

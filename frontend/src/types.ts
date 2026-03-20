@@ -35,6 +35,9 @@ export interface RatingBreakdown {
   def_third_pct: number;
   mid_third_pct: number;
   duration_min: number;
+  pass_total: number;
+  pass_accurate: number;
+  pass_accuracy_pct: number;
 }
 
 export interface PlayerRating {
@@ -43,7 +46,24 @@ export interface PlayerRating {
   attacking: number;
   positioning: number;
   pressing: number;
+  passing: number;
   breakdown: RatingBreakdown;
+}
+
+export interface PassEvent {
+  frame: number;
+  kick_frame: number;
+  result: 'accurate' | 'failed' | 'unknown';
+}
+
+export interface PassStats {
+  total: number;
+  accurate: number;
+  failed: number;
+  unknown: number;
+  accuracy_pct: number;
+  events: PassEvent[];
+  coach_note: string;
 }
 
 export interface AnalysisResult {
@@ -59,6 +79,7 @@ export interface AnalysisResult {
   modules_completed: string[];
   errors: string[];
   rating?: PlayerRating;
+  pass_stats?: PassStats;
 }
 
 export interface PlayerProfile {

@@ -76,6 +76,7 @@ def compute_player_rating(
     fps: float,
     heatmap_points: Optional[List] = None,
     video_meta: Optional[Dict] = None,
+    pass_stats: Optional[Dict] = None,
 ) -> Dict:
     """
     Return FIFA-style rating dict:
@@ -147,12 +148,33 @@ def compute_player_rating(
 
     pressing = (pressing_intensity_s * 0.45 + def_eng_s * 0.30 + effort_s * 0.25) * 10
 
+    # ── Passing ───────────────────────────────────────────────────────────────
+    ps = pass_stats or {}
+    pass_total    = int(ps.get("total", 0))
+    pass_accurate = int(ps.get("accurate", 0))
+    pass_pct      = float(ps.get("accuracy_pct", 0.0))
+
+    if pass_total >= 3:
+        # Accuracy component (0-1): main signal
+        acc_s = pass_pct / 100.0
+
+        # Volume component: passes per minute (more involvement = better)
+        passes_per_min = pass_total / max(duration_min, 0.01)
+        vol_s = min(passes_per_min / 6.0, 1.0)  # 6 passes/min = full score
+
+        passing = (acc_s * 0.75 + vol_s * 0.25) * 10
+    else:
+        # Insufficient data — neutral score so it doesn't tank the overall
+        passing = 6.0
+        pass_pct = 0.0
+
     # ── Overall (weighted) ────────────────────────────────────────────────────
     overall = (
-        physical    * 0.35 +
-        attacking   * 0.25 +
-        positioning * 0.25 +
-        pressing    * 0.15
+        physical    * 0.30 +
+        attacking   * 0.20 +
+        positioning * 0.20 +
+        pressing    * 0.10 +
+        passing     * 0.20
     )
 
     return {
@@ -161,6 +183,7 @@ def compute_player_rating(
         "attacking":   _clamp(attacking),
         "positioning": _clamp(positioning),
         "pressing":    _clamp(pressing),
+        "passing":     _clamp(passing),
         "breakdown": {
             "pace_kmh":        round(max_spd_mps * 3.6, 1),
             "dist_per_min_m":  round(dist_per_min, 1),
@@ -169,5 +192,8 @@ def compute_player_rating(
             "def_third_pct":   int(def_pct * 100),
             "mid_third_pct":   int(mid_pct * 100),
             "duration_min":    round(duration_min, 1),
+            "pass_total":      pass_total,
+            "pass_accurate":   pass_accurate,
+            "pass_accuracy_pct": round(pass_pct, 1),
         },
     }

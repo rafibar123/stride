@@ -11,6 +11,7 @@ from engine.events import EventEngine, EventsConfig
 from engine.team import TeamClassifier, TeamClassificationConfig
 from engine.pitch import PitchCalibrator, PitchConfig, WorldMetrics, DEFAULT_METERS_PER_PIXEL
 from engine.rating import compute_player_rating
+from engine.passes import detect_passes
 
 log = logging.getLogger("pipeline")
 
@@ -54,6 +55,7 @@ class PipelineResult:
         video_meta: Dict,
         team_prototypes: Dict,
         rating: Dict,
+        pass_stats: Dict,
     ):
         self.run_id = run_id
         self.engine_name = engine_name
@@ -78,6 +80,7 @@ class PipelineResult:
         self.video_meta = video_meta
         self.team_prototypes = team_prototypes
         self.rating = rating
+        self.pass_stats = pass_stats
 
     def to_dict(self):
         return {
@@ -107,6 +110,7 @@ class PipelineResult:
                 str(k): v.tolist() for k, v in self.team_prototypes.items()
             },
             "rating": self.rating,
+            "pass_stats": self.pass_stats,
         }
 
 
@@ -392,6 +396,28 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
     possession_by_team = event_engine.export_possession_by_team()
     possession_by_player = event_engine.export_possession_by_player()
 
+    # ── Pass detection ─────────────────────────────────────────────────────────
+    pass_stats: Dict = {}
+    if target_track_id is not None and ball_track:
+        try:
+            pass_stats = detect_passes(
+                ball_track=ball_track,
+                target_track_id=target_track_id,
+                track_history=track_history,
+                fps=fps,
+                frame_size=(width, height),
+            )
+            log.info(
+                "[%s] pass detection done  total=%d  accurate=%d  accuracy=%.0f%%",
+                run_id,
+                pass_stats.get("total", 0),
+                pass_stats.get("accurate", 0),
+                pass_stats.get("accuracy_pct", 0),
+            )
+        except Exception as e:
+            log.warning("[%s] pass detection failed: %s", run_id, e)
+            pass_stats = {}
+
     # ── FIFA-style player rating ───────────────────────────────────────────────
     rating: Dict = {}
     if per_player_metrics:
@@ -400,11 +426,12 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
             fps,
             heatmap_points=heatmap_points,
             video_meta={"width": width, "height": height},
+            pass_stats=pass_stats,
         )
-        log.info("[%s] rating computed  overall=%.1f  phys=%.1f  att=%.1f  pos=%.1f  press=%.1f",
+        log.info("[%s] rating computed  overall=%.1f  phys=%.1f  att=%.1f  pos=%.1f  press=%.1f  pass=%.1f",
                  run_id, rating.get("overall", 0), rating.get("physical", 0),
                  rating.get("attacking", 0), rating.get("positioning", 0),
-                 rating.get("pressing", 0))
+                 rating.get("pressing", 0), rating.get("passing", 0))
 
     modules_completed.append("world_metrics")
     log.info("[%s] pipeline complete  total=%.2fs  tracks=%d  events=%d  errors=%d",
@@ -455,4 +482,5 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
         video_meta=video_meta,
         team_prototypes={k: np.array(v) for k, v in team_classifier.prototypes.items()},
         rating=rating,
+        pass_stats=pass_stats,
     )

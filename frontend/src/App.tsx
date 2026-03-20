@@ -7,6 +7,7 @@ import PlayerProfileForm from './components/PlayerProfileForm';
 import PlayerSelector from './components/PlayerSelector';
 import PlayerRating from './components/PlayerRating';
 import PlayerStats from './components/PlayerStats';
+import PassStats from './components/PassStats';
 import HeatmapPitch from './components/HeatmapPitch';
 
 import type { AnalysisResult, AnalysisStage, PlayerProfile } from './types';
@@ -322,6 +323,10 @@ export default function App() {
             )}
 
             <PlayerStats stats={player} fps={result.fps} />
+
+            {result.pass_stats && (
+              <PassStats stats={result.pass_stats} />
+            )}
 
             <HeatmapPitch
               points={result.heatmap_points}
