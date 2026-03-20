@@ -23,15 +23,25 @@ from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import cv2
+try:
+    import cv2
+except ImportError as _cv2_err:
+    cv2 = None  # type: ignore
+    print(f"[server] WARNING: cv2 import failed: {_cv2_err}", flush=True)
+
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from engine.pipeline import PipelineConfig, run_pipeline
-from engine.report import generate_pdf
-from engine.analysis import generate_match_analysis
+try:
+    from engine.pipeline import PipelineConfig, run_pipeline
+    from engine.report import generate_pdf
+    from engine.analysis import generate_match_analysis
+    _ENGINE_OK = True
+except Exception as _engine_err:
+    _ENGINE_OK = False
+    print(f"[server] WARNING: engine import failed: {_engine_err}", flush=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -186,7 +196,15 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    import sys, platform
+    return {
+        "status": "ok",
+        "python": sys.version,
+        "platform": platform.platform(),
+        "port": os.environ.get("PORT", "not set"),
+        "cv2": cv2 is not None if cv2 else False,
+        "engine": _ENGINE_OK,
+    }
 
 
 @app.post("/preview")
