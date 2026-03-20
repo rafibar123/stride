@@ -27,6 +27,25 @@ export interface VideoMeta {
   frames_processed: number;
 }
 
+export interface RatingBreakdown {
+  pace_kmh: number;
+  dist_per_min_m: number;
+  sprints_per_min: number;
+  att_third_pct: number;
+  def_third_pct: number;
+  mid_third_pct: number;
+  duration_min: number;
+}
+
+export interface PlayerRating {
+  overall: number;
+  physical: number;
+  attacking: number;
+  positioning: number;
+  pressing: number;
+  breakdown: RatingBreakdown;
+}
+
 export interface AnalysisResult {
   run_id: string;
   engine: string;
@@ -39,6 +58,7 @@ export interface AnalysisResult {
   video: VideoMeta;
   modules_completed: string[];
   errors: string[];
+  rating?: PlayerRating;
 }
 
 export interface PlayerProfile {

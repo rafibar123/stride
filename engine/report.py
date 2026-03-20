@@ -421,8 +421,93 @@ def _draw_cover(c, W, H, data: Dict):
         _fill(c, _TMID)
         c.drawCentredString(sx, sub_y - 13, val)
 
+    # ── rating section ────────────────────────────────────────────────────
+    rating = data.get("rating", {})
+    if rating:
+        overall     = rating.get("overall", 0.0)
+        physical    = rating.get("physical", 0.0)
+        attacking   = rating.get("attacking", 0.0)
+        positioning = rating.get("positioning", 0.0)
+        pressing    = rating.get("pressing", 0.0)
+
+        def _rating_rgb(v):
+            if v >= 8.5: return (0.984, 0.749, 0.141)  # gold
+            if v >= 7.0: return _GREEN
+            if v >= 5.5: return (0.220, 0.741, 0.973)  # blue
+            return (0.973, 0.431, 0.431)                # red
+
+        rat_y = sub_y - 1.8 * cm
+        c.setFont("Helvetica-Bold", 8)
+        _fill(c, _TDIM)
+        c.drawString(margin, rat_y, "PERFORMANCE RATING")
+
+        # Big overall number
+        ov_rgb = _rating_rgb(overall)
+        ov_size = 52
+        c.setFont("Helvetica-Bold", ov_size)
+        _fill(c, ov_rgb)
+        ov_x = margin + 0.1 * cm
+        ov_y = rat_y - ov_size * 0.8
+        c.drawString(ov_x, ov_y, f"{overall:.1f}")
+
+        # Rating label beside the number
+        def _rat_label(v):
+            if v >= 9.0: return "World Class"
+            if v >= 8.0: return "Excellent"
+            if v >= 7.0: return "Very Good"
+            if v >= 6.0: return "Good"
+            return "Average"
+
+        c.setFont("Helvetica-Bold", 11)
+        _fill(c, ov_rgb)
+        c.drawString(ov_x + 68, ov_y + 18, _rat_label(overall))
+        c.setFont("Helvetica", 9)
+        _fill(c, _TDIM)
+        c.drawString(ov_x + 68, ov_y + 4, "Overall Performance Score")
+
+        # 4 sub-score attribute bars
+        bar_items = [
+            ("Physical",    physical),
+            ("Attacking",   attacking),
+            ("Positioning", positioning),
+            ("Pressing",    pressing),
+        ]
+        bar_x      = ov_x + 68
+        bar_w      = inner_w - 68 - 0.1 * cm
+        bar_height = 0.28 * cm
+        bar_gap    = 0.50 * cm
+        bar_start  = ov_y - 0.1 * cm
+
+        for i, (lbl, val) in enumerate(bar_items):
+            by = bar_start - i * bar_gap
+            rgb = _rating_rgb(val)
+
+            # Track
+            _rounded_rect(c, bar_x, by - bar_height, bar_w, bar_height,
+                           r=2, fill_rgb=_SURF)
+            # Fill (3-9.8 range → 0-100%)
+            fill_pct = max(0.0, min(1.0, (val - 3.0) / 6.8))
+            fill_w = fill_pct * bar_w
+            if fill_w > 2:
+                _rounded_rect(c, bar_x, by - bar_height, fill_w, bar_height,
+                               r=2, fill_rgb=rgb)
+
+            # Label left
+            c.setFont("Helvetica-Bold", 8)
+            _fill(c, _TMID)
+            c.drawRightString(bar_x - 4, by - bar_height + 2, lbl[:3].upper())
+
+            # Value right
+            c.setFont("Helvetica-Bold", 8)
+            _fill(c, rgb)
+            c.drawString(bar_x + bar_w + 4, by - bar_height + 2, f"{val:.1f}")
+
+        rat_consumed = ov_size * 0.8 + bar_gap * 4 + 0.6 * cm
+    else:
+        rat_consumed = 0.0
+
     # ── zone section ──────────────────────────────────────────────────────
-    zone_label_y = sub_y - 2.0 * cm
+    zone_label_y = sub_y - 2.0 * cm - rat_consumed
     c.setFont("Helvetica-Bold", 8)
     _fill(c, _TDIM)
     c.drawString(margin, zone_label_y, "PITCH ZONE COVERAGE")
@@ -591,7 +676,15 @@ def _draw_details_page(c, W, H, data: Dict, heatmap_tmp: Optional[str]):
     zt = zd + zm + za or 1
 
     dur_str = f"{int(dur_s // 60)}m {int(dur_s % 60)}s"
+    rat    = data.get("rating", {})
     rows: list = []
+    if rat:
+        rows.append(("Overall Rating",
+                     f"{rat.get('overall', 0):.1f} / 10  —  "
+                     f"Phy {rat.get('physical',0):.1f} · "
+                     f"Att {rat.get('attacking',0):.1f} · "
+                     f"Pos {rat.get('positioning',0):.1f} · "
+                     f"Prs {rat.get('pressing',0):.1f}"))
     if pi.get("name"):
         rows.append(("Player", pi["name"]))
     if pi.get("number"):

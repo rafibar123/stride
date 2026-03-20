@@ -10,6 +10,7 @@ from engine.detection import Detector, DetectionConfig
 from engine.events import EventEngine, EventsConfig
 from engine.team import TeamClassifier, TeamClassificationConfig
 from engine.pitch import PitchCalibrator, PitchConfig, WorldMetrics, DEFAULT_METERS_PER_PIXEL
+from engine.rating import compute_player_rating
 
 log = logging.getLogger("pipeline")
 
@@ -52,6 +53,7 @@ class PipelineResult:
         quality: Dict,
         video_meta: Dict,
         team_prototypes: Dict,
+        rating: Dict,
     ):
         self.run_id = run_id
         self.engine_name = engine_name
@@ -75,6 +77,7 @@ class PipelineResult:
         self.quality = quality
         self.video_meta = video_meta
         self.team_prototypes = team_prototypes
+        self.rating = rating
 
     def to_dict(self):
         return {
@@ -103,6 +106,7 @@ class PipelineResult:
             "team_prototypes": {
                 str(k): v.tolist() for k, v in self.team_prototypes.items()
             },
+            "rating": self.rating,
         }
 
 
@@ -270,28 +274,41 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 log.info("[%s] locked target track_id=%d  click=(%.3f, %.3f)  jersey=%s",
                          run_id, target_track_id, click_x, click_y, jersey_color)
 
-            # attach pitch coords to active tracks
+            # collect team votes and player heatmap
             for tr in active_tracks:
                 if tr.get("team_id") is not None:
                     team_votes[tr["track_id"]][tr["team_id"]] += 1
 
-                # only collect heatmap for the target player (or everyone when no click given)
+                # heatmap: target player only (or all when no click given)
                 if target_track_id is not None and tr["track_id"] != target_track_id:
                     continue
 
+                # Use foot position (bottom-centre of bbox) for ground accuracy
+                bx1, by1, bx2, by2 = tr["bbox"]
+                foot_x = (bx1 + bx2) / 2.0
+                foot_y = by2
+
                 if pitch_calibrator.is_ready():
-                    ax, ay = pitch_calibrator.bbox_anchor(tr["bbox"])
-                    pitch_xy = pitch_calibrator.pixel_to_pitch(ax, ay)
+                    pitch_xy = pitch_calibrator.pixel_to_pitch(foot_x, foot_y)
                     if pitch_xy is not None:
                         tr["pitch_x"] = round(float(pitch_xy[0]), 3)
                         tr["pitch_y"] = round(float(pitch_xy[1]), 3)
                         heatmap_points.append([tr["pitch_x"], tr["pitch_y"]])
                     else:
-                        heatmap_points.append(tr["center"])
+                        # calibrated but this point is outside the mapped area
+                        heatmap_points.append([
+                            round(foot_x / max(width, 1) * 105.0, 3),
+                            round(foot_y / max(height, 1) * 68.0, 3),
+                        ])
                 else:
-                    heatmap_points.append(tr["center"])
+                    # No homography — normalise pixel → pitch coordinate space.
+                    # Horizontal pixel axis ≈ pitch length (camera faces pitch side-on).
+                    heatmap_points.append([
+                        round(foot_x / max(width, 1) * 105.0, 3),
+                        round(foot_y / max(height, 1) * 68.0, 3),
+                    ])
 
-            # attach pitch coords to ball
+            # Ball — update event engine only; ball is NOT part of player heatmap
             if ball_det is not None:
                 if pitch_calibrator.is_ready():
                     ball_center = tuple(ball_det["center"])
@@ -299,10 +316,6 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                     if pitch_xy is not None:
                         ball_det["pitch_x"] = round(float(pitch_xy[0]), 3)
                         ball_det["pitch_y"] = round(float(pitch_xy[1]), 3)
-                if "pitch_x" in ball_det and "pitch_y" in ball_det:
-                    heatmap_points.append([ball_det["pitch_x"], ball_det["pitch_y"]])
-                else:
-                    heatmap_points.append(ball_det["center"])
 
             event_engine.update(
                 frame_idx=frame_idx,
@@ -360,6 +373,10 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
             if pitch_xy is not None:
                 tr["pitch_x"] = round(float(pitch_xy[0]), 3)
                 tr["pitch_y"] = round(float(pitch_xy[1]), 3)
+        else:
+            # Normalise pixel → pitch space so zone_frames are always populated
+            tr["pitch_x"] = round(tr["x"] / max(width, 1) * 105.0, 3)
+            tr["pitch_y"] = round(tr["y"] / max(height, 1) * 68.0, 3)
 
     motion_metrics = world_metrics.compute_track_metrics(tracks, fps, config.meters_per_pixel)
     per_player_metrics = world_metrics.compute_per_player_metrics(tracks, fps, config.meters_per_pixel)
@@ -374,6 +391,20 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
     team_pass_network = event_engine.export_team_pass_network()
     possession_by_team = event_engine.export_possession_by_team()
     possession_by_player = event_engine.export_possession_by_player()
+
+    # ── FIFA-style player rating ───────────────────────────────────────────────
+    rating: Dict = {}
+    if per_player_metrics:
+        rating = compute_player_rating(
+            per_player_metrics[0],
+            fps,
+            heatmap_points=heatmap_points,
+            video_meta={"width": width, "height": height},
+        )
+        log.info("[%s] rating computed  overall=%.1f  phys=%.1f  att=%.1f  pos=%.1f  press=%.1f",
+                 run_id, rating.get("overall", 0), rating.get("physical", 0),
+                 rating.get("attacking", 0), rating.get("positioning", 0),
+                 rating.get("pressing", 0))
 
     modules_completed.append("world_metrics")
     log.info("[%s] pipeline complete  total=%.2fs  tracks=%d  events=%d  errors=%d",
@@ -423,4 +454,5 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
         quality=quality,
         video_meta=video_meta,
         team_prototypes={k: np.array(v) for k, v in team_classifier.prototypes.items()},
+        rating=rating,
     )

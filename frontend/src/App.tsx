@@ -5,6 +5,7 @@ import UploadZone from './components/UploadZone';
 import ProgressBar from './components/ProgressBar';
 import PlayerProfileForm from './components/PlayerProfileForm';
 import PlayerSelector from './components/PlayerSelector';
+import PlayerRating from './components/PlayerRating';
 import PlayerStats from './components/PlayerStats';
 import HeatmapPitch from './components/HeatmapPitch';
 
@@ -312,6 +313,13 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {result.rating && (
+              <PlayerRating
+                rating={result.rating}
+                playerName={playerProfile?.name}
+              />
+            )}
 
             <PlayerStats stats={player} fps={result.fps} />
 
