@@ -14,6 +14,7 @@ const STAGES = [
   { key: 'detecting',       label: 'Player detection' },
   { key: 'tracking',        label: 'Tracking player' },
   { key: 'post_processing', label: 'Computing metrics' },
+  { key: 'ai_analysis',     label: 'AI match analysis' },
   { key: 'done',            label: 'Done' },
 ];
 

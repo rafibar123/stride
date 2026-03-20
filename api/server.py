@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from engine.pipeline import PipelineConfig, run_pipeline
 from engine.report import generate_pdf
+from engine.analysis import generate_match_analysis
 
 logging.basicConfig(
     level=logging.INFO,
@@ -121,6 +122,25 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
         result_dict = result_obj.to_dict()
         if player_info:
             result_dict["player_info"] = player_info
+
+        # ── AI match analysis ──────────────────────────────────────────────
+        with _jobs_lock:
+            _jobs[job_id] = {"pct": 95, "stage": "ai_analysis"}
+
+        try:
+            match_analysis = await loop.run_in_executor(
+                None, generate_match_analysis, result_dict
+            )
+            result_dict["match_analysis"] = match_analysis
+            log.info(
+                "[%s] match analysis done  ai=%s  pos=%d  neg=%d",
+                job_id[:8],
+                match_analysis.get("ai_generated"),
+                match_analysis.get("actions", {}).get("positive_count", 0),
+                match_analysis.get("actions", {}).get("negative_count", 0),
+            )
+        except Exception as exc:
+            log.warning("[%s] match analysis failed: %s", job_id[:8], exc)
 
         with _jobs_lock:
             _jobs[job_id] = {"pct": 100, "stage": "done", "result": result_dict}

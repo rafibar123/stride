@@ -8,6 +8,7 @@ import PlayerSelector from './components/PlayerSelector';
 import PlayerRating from './components/PlayerRating';
 import PlayerStats from './components/PlayerStats';
 import PassStats from './components/PassStats';
+import MatchAnalysis from './components/MatchAnalysis';
 import HeatmapPitch from './components/HeatmapPitch';
 
 import type { AnalysisResult, AnalysisStage, PlayerProfile } from './types';
@@ -326,6 +327,10 @@ export default function App() {
 
             {result.pass_stats && (
               <PassStats stats={result.pass_stats} />
+            )}
+
+            {result.match_analysis && (
+              <MatchAnalysis analysis={result.match_analysis} />
             )}
 
             <HeatmapPitch

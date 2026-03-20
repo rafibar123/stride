@@ -66,6 +66,31 @@ export interface PassStats {
   coach_note: string;
 }
 
+export interface ActionItem {
+  type: string;
+  label: string;
+}
+
+export interface ActionCounts {
+  positive_count: number;
+  negative_count: number;
+  positive_items: ActionItem[];
+  negative_items: ActionItem[];
+}
+
+export interface TrainingDrill {
+  drill: string;
+  duration: string;
+  focus: string;
+}
+
+export interface MatchAnalysis {
+  actions: ActionCounts;
+  summary: [string, string, string];
+  recommendations: [TrainingDrill, TrainingDrill, TrainingDrill];
+  ai_generated: boolean;
+}
+
 export interface AnalysisResult {
   run_id: string;
   engine: string;
@@ -80,6 +105,7 @@ export interface AnalysisResult {
   errors: string[];
   rating?: PlayerRating;
   pass_stats?: PassStats;
+  match_analysis?: MatchAnalysis;
 }
 
 export interface PlayerProfile {

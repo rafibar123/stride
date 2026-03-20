@@ -529,8 +529,42 @@ def _draw_cover(c, W, H, data: Dict):
     else:
         rat_consumed = 0.0
 
+    # ── actions counter ───────────────────────────────────────────────────
+    ma          = data.get("match_analysis", {}) or {}
+    ma_actions  = ma.get("actions", {}) or {}
+    pos_count   = int(ma_actions.get("positive_count", 0))
+    neg_count   = int(ma_actions.get("negative_count", 0))
+    has_actions = pos_count > 0 or neg_count > 0
+
+    if has_actions:
+        ac_y = sub_y - 2.0 * cm - rat_consumed
+        ac_w = (inner_w - 0.5 * cm) / 2
+        # Positive box
+        _rounded_rect(c, margin, ac_y - 1.2 * cm, ac_w, 1.2 * cm,
+                      r=6, fill_rgb=(0.0, 0.15, 0.07))
+        _fill(c, _GREEN)
+        c.setFont("Helvetica-Bold", 24)
+        c.drawString(margin + 10, ac_y - 0.85 * cm, str(pos_count))
+        c.setFont("Helvetica", 8)
+        _fill(c, _TMID)
+        c.drawString(margin + 10 + 32, ac_y - 0.78 * cm, "POSITIVE ACTIONS")
+        # Negative box
+        neg_x = margin + ac_w + 0.5 * cm
+        _rounded_rect(c, neg_x, ac_y - 1.2 * cm, ac_w, 1.2 * cm,
+                      r=6, fill_rgb=(0.15, 0.04, 0.04))
+        _fill(c, (0.973, 0.431, 0.431))
+        c.setFont("Helvetica-Bold", 24)
+        c.drawString(neg_x + 10, ac_y - 0.85 * cm, str(neg_count))
+        c.setFont("Helvetica", 8)
+        _fill(c, _TMID)
+        c.drawString(neg_x + 10 + 32, ac_y - 0.78 * cm, "NEGATIVE ACTIONS")
+
+        ac_consumed = 1.55 * cm
+    else:
+        ac_consumed = 0.0
+
     # ── zone section ──────────────────────────────────────────────────────
-    zone_label_y = sub_y - 2.0 * cm - rat_consumed
+    zone_label_y = sub_y - 2.0 * cm - rat_consumed - ac_consumed
     c.setFont("Helvetica-Bold", 8)
     _fill(c, _TDIM)
     c.drawString(margin, zone_label_y, "PITCH ZONE COVERAGE")
@@ -773,6 +807,83 @@ def _draw_details_page(c, W, H, data: Dict, heatmap_tmp: Optional[str]):
         c.setFont("Helvetica", 8)
         _fill(c, _TEXT)
         c.drawString(margin + 26, box_y + box_h / 2 - 4, display_note)
+
+    # ── AI match analysis ──────────────────────────────────────────────────
+    ma       = data.get("match_analysis", {}) or {}
+    summary  = ma.get("summary", [])
+    recs     = ma.get("recommendations", [])
+    ai_gen   = ma.get("ai_generated", False)
+
+    if summary and row_y > 5.5 * cm:
+        # Section header
+        ai_label_y = row_y - 0.55 * cm
+        c.setFont("Helvetica-Bold", 8)
+        _fill(c, _TDIM)
+        c.drawString(margin, ai_label_y, "MATCH ANALYSIS")
+        if ai_gen:
+            c.setFont("Helvetica", 7)
+            _fill(c, _GREEN)
+            c.drawString(margin + 80, ai_label_y, "✦ AI Generated")
+        _draw_green_line(c, margin, ai_label_y - 0.3 * cm, inner_w, 0.4)
+
+        # 3 summary sentences
+        sent_y = ai_label_y - 0.65 * cm
+        for i, sent in enumerate(summary[:3]):
+            if sent_y < 4.0 * cm:
+                break
+            # Number badge
+            badge_size = 0.35 * cm
+            _rounded_rect(c, margin, sent_y - badge_size, badge_size, badge_size,
+                           r=2, fill_rgb=_GDIM)
+            c.setFont("Helvetica-Bold", 7)
+            _fill(c, _GREEN)
+            c.drawCentredString(margin + badge_size / 2, sent_y - badge_size + 2, str(i + 1))
+
+            # Sentence text (truncate to fit)
+            text_x    = margin + badge_size + 5
+            avail_w   = inner_w - badge_size - 5
+            max_chars = int(avail_w / 3.8)
+            display   = sent if len(sent) <= max_chars else sent[:max_chars - 1] + "…"
+            c.setFont("Helvetica", 7.5)
+            _fill(c, _TEXT)
+            c.drawString(text_x, sent_y - badge_size + 2, display)
+            sent_y -= badge_size + 5
+
+    # ── Training recommendations ───────────────────────────────────────────
+    if recs and row_y > 4.0 * cm:
+        rec_label_y = row_y - 3.2 * cm if summary else row_y - 0.55 * cm
+        if rec_label_y > 4.5 * cm:
+            c.setFont("Helvetica-Bold", 8)
+            _fill(c, _TDIM)
+            c.drawString(margin, rec_label_y, "TRAINING RECOMMENDATIONS")
+            _draw_green_line(c, margin, rec_label_y - 0.3 * cm, inner_w, 0.4)
+
+            rec_accents = [_GREEN, (0.220, 0.741, 0.973), (0.984, 0.749, 0.141)]
+            rec_y       = rec_label_y - 0.65 * cm
+            rec_h       = 0.6 * cm
+
+            for j, rec in enumerate(recs[:3]):
+                if rec_y < 3.5 * cm:
+                    break
+                acc = rec_accents[j % len(rec_accents)]
+                # Background
+                _rounded_rect(c, margin, rec_y - rec_h, inner_w, rec_h,
+                               r=4, fill_rgb=_SURF)
+                # Accent left bar
+                _fill(c, acc)
+                c.rect(margin, rec_y - rec_h, 3, rec_h, fill=1, stroke=0)
+                # Drill name
+                c.setFont("Helvetica-Bold", 8)
+                _fill(c, _TEXT)
+                c.drawString(margin + 9, rec_y - rec_h + 8, rec.get("drill", ""))
+                # Duration + focus (right side)
+                dur    = rec.get("duration", "")
+                focus  = rec.get("focus", "")
+                c.setFont("Helvetica", 7)
+                _fill(c, _TMID)
+                c.drawRightString(margin + inner_w - 4, rec_y - rec_h + 13,
+                                  f"{dur}  ·  {focus}")
+                rec_y -= rec_h + 3
 
     # ── footer ────────────────────────────────────────────────────────────
     _draw_green_line(c, margin, 1.35 * cm, inner_w, thickness=0.4)
