@@ -21,7 +21,7 @@ function DrillCard({ drill, index }: { drill: TrainingDrill; index: number }) {
 }
 
 export default function MatchAnalysis({ analysis }: Props) {
-  const { actions, summary, recommendations, ai_generated } = analysis;
+  const { actions, summary, recommendations, ai_generated, player_style } = analysis;
   const { positive_count, negative_count } = actions;
 
   return (
@@ -92,6 +92,27 @@ export default function MatchAnalysis({ analysis }: Props) {
           ))}
         </div>
       </div>
+
+      {/* ── Player style ── */}
+      {player_style && (
+        <div className="ma-section">
+          <span className="ma-section-label">Your Playing Style</span>
+          <div className="ma-style-card">
+            <div className="ma-style-top">
+              <span className="ma-style-icon">⚽</span>
+              <div>
+                <span className="ma-style-archetype">{player_style.archetype}</span>
+                <p className="ma-style-desc">{player_style.description}</p>
+              </div>
+            </div>
+            <div className="ma-style-traits">
+              {player_style.traits.map((t, i) => (
+                <span key={i} className="ma-style-trait">{t}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         .ma-wrap {
@@ -252,6 +273,30 @@ export default function MatchAnalysis({ analysis }: Props) {
           font-size: 11px; color: var(--text-muted);
           border-left: 1px solid var(--border);
           padding-left: 10px;
+        }
+
+        /* ── Player style ── */
+        .ma-style-card {
+          background: var(--surface-2);
+          border: 1px solid var(--border);
+          border-left: 3px solid var(--green);
+          border-radius: 10px; padding: 14px 16px;
+          display: flex; flex-direction: column; gap: 10px;
+        }
+        .ma-style-top { display: flex; gap: 12px; align-items: flex-start; }
+        .ma-style-icon { font-size: 24px; flex-shrink: 0; margin-top: 2px; }
+        .ma-style-archetype {
+          display: block; font-size: 14px; font-weight: 800;
+          color: var(--green); margin-bottom: 4px;
+        }
+        .ma-style-desc { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin: 0; }
+        .ma-style-traits { display: flex; flex-wrap: wrap; gap: 6px; }
+        .ma-style-trait {
+          font-size: 10px; font-weight: 700;
+          padding: 3px 10px; border-radius: 20px;
+          background: var(--green-dim);
+          border: 1px solid rgba(0,230,118,.2);
+          color: var(--green);
         }
       `}</style>
     </div>

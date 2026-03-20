@@ -885,6 +885,108 @@ def _draw_details_page(c, W, H, data: Dict, heatmap_tmp: Optional[str]):
                                   f"{dur}  ·  {focus}")
                 rec_y -= rec_h + 3
 
+    # ── Activity breakdown + sprint highlights ────────────────────────────
+    adv = data.get("advanced_metrics", {}) or {}
+    activity   = adv.get("activity", {})
+    dir_chg    = adv.get("direction_changes", 0)
+    spr_rec    = adv.get("sprint_recovery_avg_sec", 0.0)
+    spr_mom    = adv.get("sprint_moments", [])
+    st_insight = adv.get("stamina_insight", "")
+
+    if activity and rec_y > 4.0 * cm:
+        rec_y -= 0.4 * cm
+        c.setFont("Helvetica-Bold", 8)
+        _fill(c, _TDIM)
+        c.drawString(margin, rec_y, "ACTIVITY BREAKDOWN")
+        _draw_green_line(c, margin, rec_y - 0.3 * cm, inner_w, 0.4)
+        rec_y -= 0.65 * cm
+
+        act_items = [
+            ("Running",  activity.get("running_pct",  0), _GREEN),
+            ("Walking",  activity.get("walking_pct",  0), (0.984, 0.749, 0.141)),
+            ("Standing", activity.get("standing_pct", 0), (0.973, 0.439, 0.439)),
+        ]
+        bar_total_w = inner_w - 1.8 * cm
+        for label, pct, color in act_items:
+            if rec_y < 3.5 * cm:
+                break
+            bar_w = bar_total_w * pct / 100
+            c.setFont("Helvetica", 7)
+            _fill(c, _TMID)
+            c.drawString(margin, rec_y - 0.22 * cm, f"{label}: {pct}%")
+            _fill(c, color)
+            c.rect(margin + 1.8 * cm, rec_y - 0.32 * cm, bar_w, 0.2 * cm, fill=1, stroke=0)
+            rec_y -= 0.38 * cm
+
+        if dir_chg > 0 and rec_y > 3.5 * cm:
+            c.setFont("Helvetica", 7)
+            _fill(c, _TMID)
+            agility_tag = ("Excellent agility" if dir_chg >= 30
+                           else "Good agility"    if dir_chg >= 18 else "")
+            tag_str = f"  ({agility_tag})" if agility_tag else ""
+            c.drawString(margin, rec_y - 0.2 * cm,
+                         f"Direction changes: {dir_chg}{tag_str}")
+            rec_y -= 0.38 * cm
+
+        if spr_rec > 0 and rec_y > 3.5 * cm:
+            c.setFont("Helvetica", 7)
+            _fill(c, _TMID)
+            c.drawString(margin, rec_y - 0.2 * cm,
+                         f"Sprint recovery: {spr_rec}s avg between sprints")
+            rec_y -= 0.38 * cm
+
+    if spr_mom and rec_y > 3.5 * cm:
+        rec_y -= 0.2 * cm
+        c.setFont("Helvetica-Bold", 8)
+        _fill(c, _TDIM)
+        c.drawString(margin, rec_y, "SPRINT HIGHLIGHTS")
+        _draw_green_line(c, margin, rec_y - 0.3 * cm, inner_w, 0.4)
+        rec_y -= 0.6 * cm
+        for j, sm in enumerate(spr_mom[:3]):
+            if rec_y < 3.5 * cm:
+                break
+            c.setFont("Helvetica-Bold", 8)
+            _fill(c, _GREEN)
+            c.drawString(margin, rec_y - 0.2 * cm,
+                         f"Sprint #{j+1}  {sm.get('label', '')}  -  {sm.get('speed_kmh', 0):.1f} km/h")
+            rec_y -= 0.38 * cm
+
+    # ── Player style ──────────────────────────────────────────────────────
+    ma        = data.get("match_analysis", {}) or {}
+    ps        = ma.get("player_style", {}) or {}
+    archetype = ps.get("archetype", "")
+    ps_traits = ps.get("traits", [])
+
+    if archetype and rec_y > 3.5 * cm:
+        rec_y -= 0.3 * cm
+        c.setFont("Helvetica-Bold", 8)
+        _fill(c, _TDIM)
+        c.drawString(margin, rec_y, "PLAYING STYLE")
+        _draw_green_line(c, margin, rec_y - 0.3 * cm, inner_w, 0.4)
+        rec_y -= 0.6 * cm
+        if rec_y > 3.5 * cm:
+            c.setFont("Helvetica-Bold", 9)
+            _fill(c, _GREEN)
+            c.drawString(margin, rec_y - 0.22 * cm, archetype)
+            rec_y -= 0.42 * cm
+        if ps_traits and rec_y > 3.5 * cm:
+            c.setFont("Helvetica", 7)
+            _fill(c, _TMID)
+            c.drawString(margin, rec_y - 0.2 * cm, "  ·  ".join(ps_traits))
+            rec_y -= 0.38 * cm
+
+    # ── Stamina insight ───────────────────────────────────────────────────
+    if st_insight and rec_y > 3.5 * cm:
+        rec_y -= 0.2 * cm
+        c.setFont("Helvetica-Bold", 8)
+        _fill(c, _TDIM)
+        c.drawString(margin, rec_y, "STAMINA")
+        _draw_green_line(c, margin, rec_y - 0.3 * cm, inner_w, 0.4)
+        rec_y -= 0.55 * cm
+        c.setFont("Helvetica", 7)
+        _fill(c, _TMID)
+        c.drawString(margin, rec_y - 0.2 * cm, st_insight[:120])
+
     # ── footer ────────────────────────────────────────────────────────────
     _draw_green_line(c, margin, 1.35 * cm, inner_w, thickness=0.4)
     c.setFont("Helvetica", 7.5)

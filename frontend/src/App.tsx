@@ -10,6 +10,10 @@ import PlayerStats from './components/PlayerStats';
 import PassStats from './components/PassStats';
 import MatchAnalysis from './components/MatchAnalysis';
 import ManualStatsModal from './components/ManualStatsModal';
+import ActivityBreakdown from './components/ActivityBreakdown';
+import StaminaCurve from './components/StaminaCurve';
+import HighlightMoments from './components/HighlightMoments';
+import MatchHistory from './components/MatchHistory';
 import HeatmapPitch from './components/HeatmapPitch';
 
 import type { AnalysisResult, AnalysisStage, ManualStats, PlayerProfile } from './types';
@@ -351,9 +355,26 @@ export default function App() {
               <PassStats stats={result.pass_stats} />
             )}
 
+            {result.advanced_metrics?.activity && (
+              <ActivityBreakdown metrics={result.advanced_metrics} />
+            )}
+
+            {result.advanced_metrics?.stamina_segments?.length === 5 && (
+              <StaminaCurve
+                segments={result.advanced_metrics.stamina_segments}
+                insight={result.advanced_metrics.stamina_insight}
+              />
+            )}
+
+            {result.advanced_metrics?.sprint_moments?.length > 0 && (
+              <HighlightMoments moments={result.advanced_metrics.sprint_moments} />
+            )}
+
             {result.match_analysis && (
               <MatchAnalysis analysis={result.match_analysis} />
             )}
+
+            <MatchHistory result={result} playerProfile={playerProfile} />
 
             <HeatmapPitch
               points={result.heatmap_points}

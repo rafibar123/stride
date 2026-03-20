@@ -15,22 +15,30 @@ interface Field {
 }
 
 const FIELDS: Field[] = [
-  { key: 'passes_made',       label: 'Passes made',          icon: '⚽', hint: 'Total passes you attempted' },
-  { key: 'passes_successful', label: 'Successful passes',    icon: '✅', hint: 'Passes that reached a teammate' },
-  { key: 'shots_on_goal',     label: 'Shots on goal',        icon: '🥅', hint: 'Shots that were on target' },
-  { key: 'ball_recoveries',   label: 'Ball recoveries',      icon: '🛡', hint: 'Times you won the ball back' },
-  { key: 'lost_balls',        label: 'Times lost the ball',  icon: '❌', hint: 'Times you lost possession' },
+  { key: 'passes_made',              label: 'Passes made',               icon: '⚽', hint: 'Total passes attempted' },
+  { key: 'passes_successful',        label: 'Successful passes',         icon: '✅', hint: 'Passes that reached a teammate' },
+  { key: 'shots_on_goal',            label: 'Shots on goal',             icon: '🥅', hint: 'Shots on target' },
+  { key: 'ball_recoveries',          label: 'Ball recoveries',           icon: '🛡', hint: 'Times you won the ball back' },
+  { key: 'lost_balls',               label: 'Times lost the ball',       icon: '❌', hint: 'Times you lost possession' },
+  { key: 'aerial_duels_won',         label: 'Aerial duels won',          icon: '✈️', hint: 'Headers / aerial challenges won' },
+  { key: 'aerial_duels_total',       label: 'Aerial duels total',        icon: '🔢', hint: 'Total aerial challenges' },
+  { key: 'received_under_pressure',  label: 'Received under pressure',   icon: '💪', hint: 'Times you held the ball under pressure' },
+  { key: 'created_space',            label: 'Created space',             icon: '🌟', hint: 'Times you created space for a teammate' },
 ];
 
 const empty = (): ManualStats => ({
   passes_made: 0, passes_successful: 0,
   shots_on_goal: 0, ball_recoveries: 0, lost_balls: 0,
+  aerial_duels_won: 0, aerial_duels_total: 0,
+  received_under_pressure: 0, created_space: 0,
 });
 
 export default function ManualStatsModal({ onSubmit, onSkip, loading = false }: Props) {
   const [values, setValues] = useState<Record<keyof ManualStats, string>>({
     passes_made: '', passes_successful: '', shots_on_goal: '',
     ball_recoveries: '', lost_balls: '',
+    aerial_duels_won: '', aerial_duels_total: '',
+    received_under_pressure: '', created_space: '',
   });
   const [error, setError] = useState('');
   const firstRef = useRef<HTMLInputElement>(null);
@@ -52,6 +60,10 @@ export default function ManualStatsModal({ onSubmit, onSkip, loading = false }: 
     }
     if (parsed.passes_successful > parsed.passes_made && parsed.passes_made > 0) {
       setError('Successful passes cannot exceed total passes made.');
+      return;
+    }
+    if (parsed.aerial_duels_won > parsed.aerial_duels_total && parsed.aerial_duels_total > 0) {
+      setError('Aerial duels won cannot exceed total aerial duels.');
       return;
     }
     onSubmit(parsed);

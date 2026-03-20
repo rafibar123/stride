@@ -12,6 +12,7 @@ from engine.team import TeamClassifier, TeamClassificationConfig
 from engine.pitch import PitchCalibrator, PitchConfig, WorldMetrics, DEFAULT_METERS_PER_PIXEL
 from engine.rating import compute_player_rating
 from engine.passes import detect_passes
+from engine.advanced_metrics import compute_advanced_metrics
 
 log = logging.getLogger("pipeline")
 
@@ -56,6 +57,7 @@ class PipelineResult:
         team_prototypes: Dict,
         rating: Dict,
         pass_stats: Dict,
+        advanced_metrics: Dict,
     ):
         self.run_id = run_id
         self.engine_name = engine_name
@@ -81,6 +83,7 @@ class PipelineResult:
         self.team_prototypes = team_prototypes
         self.rating = rating
         self.pass_stats = pass_stats
+        self.advanced_metrics = advanced_metrics
 
     def to_dict(self):
         return {
@@ -111,6 +114,7 @@ class PipelineResult:
             },
             "rating": self.rating,
             "pass_stats": self.pass_stats,
+            "advanced_metrics": self.advanced_metrics,
         }
 
 
@@ -433,6 +437,26 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                  rating.get("attacking", 0), rating.get("positioning", 0),
                  rating.get("pressing", 0), rating.get("passing", 0))
 
+    # ── Advanced per-player metrics ────────────────────────────────────────────
+    advanced_metrics: Dict = {}
+    if target_track_id is not None:
+        try:
+            advanced_metrics = compute_advanced_metrics(
+                track_history=track_history,
+                target_track_id=target_track_id,
+                fps=fps,
+                meters_per_pixel=config.meters_per_pixel,
+            )
+            log.info(
+                "[%s] advanced metrics  activity=%s  dir_changes=%d  sprints=%d",
+                run_id,
+                advanced_metrics.get("activity", {}),
+                advanced_metrics.get("direction_changes", 0),
+                len(advanced_metrics.get("sprint_moments", [])),
+            )
+        except Exception as exc:
+            log.warning("[%s] advanced metrics failed: %s", run_id, exc)
+
     modules_completed.append("world_metrics")
     log.info("[%s] pipeline complete  total=%.2fs  tracks=%d  events=%d  errors=%d",
              run_id, time.time() - t0, len(tracks), len(events), len(errors))
@@ -483,4 +507,5 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
         team_prototypes={k: np.array(v) for k, v in team_classifier.prototypes.items()},
         rating=rating,
         pass_stats=pass_stats,
+        advanced_metrics=advanced_metrics,
     )

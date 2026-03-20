@@ -89,6 +89,7 @@ export interface MatchAnalysis {
   summary: [string, string, string];
   recommendations: [TrainingDrill, TrainingDrill, TrainingDrill];
   ai_generated: boolean;
+  player_style?: PlayerStyle;
 }
 
 export interface AnalysisResult {
@@ -106,6 +107,7 @@ export interface AnalysisResult {
   rating?: PlayerRating;
   pass_stats?: PassStats;
   match_analysis?: MatchAnalysis;
+  advanced_metrics?: AdvancedMetrics;
 }
 
 export interface PlayerProfile {
@@ -121,6 +123,56 @@ export interface ManualStats {
   shots_on_goal: number;
   ball_recoveries: number;
   lost_balls: number;
+  aerial_duels_won: number;
+  aerial_duels_total: number;
+  received_under_pressure: number;
+  created_space: number;
+}
+
+export interface ActivityBreakdown {
+  standing_pct: number;
+  walking_pct: number;
+  running_pct: number;
+}
+
+export interface StaminaSegment {
+  segment: number;
+  label: string;
+  intensity: number;
+  sprint_count: number;
+}
+
+export interface SprintMoment {
+  timestamp_sec: number;
+  speed_kmh: number;
+  label: string;
+}
+
+export interface AdvancedMetrics {
+  activity: ActivityBreakdown;
+  direction_changes: number;
+  sprint_recovery_avg_sec: number;
+  stamina_segments: StaminaSegment[];
+  stamina_insight: string;
+  sprint_moments: SprintMoment[];
+}
+
+export interface PlayerStyle {
+  archetype: string;
+  description: string;
+  traits: string[];
+}
+
+export interface StoredMatch {
+  run_id: string;
+  timestamp: number;
+  player_name?: string;
+  distance_m: number;
+  sprint_count: number;
+  avg_speed_kmh: number;
+  max_speed_kmh: number;
+  pass_accuracy_pct?: number;
+  overall_rating?: number;
 }
 
 export type AnalysisStage =

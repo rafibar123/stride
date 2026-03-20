@@ -83,6 +83,15 @@ def compute_actions(
         pos.append({"type": "shot_on_goal",     "label": "Shot on goal"})
     for _ in range(int(ms.get("lost_balls", 0))):
         neg.append({"type": "lost_ball",         "label": "Lost the ball"})
+    for _ in range(int(ms.get("aerial_duels_won", 0))):
+        pos.append({"type": "aerial_duel_won",   "label": "Aerial duel won"})
+    aerial_lost = max(0, int(ms.get("aerial_duels_total", 0)) - int(ms.get("aerial_duels_won", 0)))
+    for _ in range(aerial_lost):
+        neg.append({"type": "aerial_duel_lost",  "label": "Aerial duel lost"})
+    for _ in range(int(ms.get("received_under_pressure", 0))):
+        pos.append({"type": "received_pressure", "label": "Received ball under pressure"})
+    for _ in range(int(ms.get("created_space", 0))):
+        pos.append({"type": "created_space",     "label": "Created space for teammate"})
 
     # ── Sprint bursts ─────────────────────────────────────────────────────────
     for _ in range(sprint_count):
@@ -147,7 +156,8 @@ def generate_match_analysis(
     fps         = float(result_dict.get("fps", 25.0))
     player_info = result_dict.get("player_info", {}) or {}
 
-    actions = compute_actions(player, pass_stats, fps, manual_stats)
+    actions      = compute_actions(player, pass_stats, fps, manual_stats)
+    player_style = _compute_player_style(player, pass_stats, rating, manual_stats)
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if api_key:
@@ -160,6 +170,7 @@ def generate_match_analysis(
                 "summary":         summary,
                 "recommendations": recs,
                 "ai_generated":    True,
+                "player_style":    player_style,
             }
         except Exception as exc:
             log.warning("Claude API call failed — using rule-based fallback: %s", exc)
@@ -170,6 +181,7 @@ def generate_match_analysis(
         "summary":         summary,
         "recommendations": recs,
         "ai_generated":    False,
+        "player_style":    player_style,
     }
 
 
@@ -457,3 +469,98 @@ def _rule_based(
         drills.append(g)
 
     return summary, drills[:3]
+
+
+# ── Player style archetype ────────────────────────────────────────────────────
+
+def _compute_player_style(
+    player: Dict,
+    pass_stats: Dict,
+    rating: Dict,
+    manual_stats: Optional[Dict] = None,
+) -> Dict:
+    """
+    Derive a football movement archetype from aggregated stats.
+    Returns {archetype, description, traits}.
+    """
+    zone_frames = player.get("zone_frames", {})
+    zd = zone_frames.get("defensive_third", 0)
+    zm = zone_frames.get("middle_third",    0)
+    za = zone_frames.get("attacking_third", 0)
+    zt = max(zd + zm + za, 1)
+    def_pct = zd / zt * 100
+    mid_pct = zm / zt * 100
+    att_pct = za / zt * 100
+
+    sprint_count = int(player.get("sprint_count", 0))
+    avg_spd      = float(player.get("avg_speed_mps", 0.0))
+
+    ms = manual_stats or {}
+    manual_total = int(ms.get("passes_made", 0))
+    manual_acc   = int(ms.get("passes_successful", 0))
+    if manual_total > 0:
+        pass_pct = manual_acc / manual_total * 100
+        has_pass = True
+    else:
+        pass_total = int(pass_stats.get("total", 0))
+        pass_acc   = int(pass_stats.get("accurate", 0))
+        pass_pct   = float(pass_stats.get("accuracy_pct", 0.0))
+        has_pass   = pass_total >= 3
+
+    aerials = int(ms.get("aerial_duels_total", 0))
+
+    if att_pct >= 40 and sprint_count >= 4:
+        archetype    = "Winger / Wide Forward"
+        description  = ("Your explosive runs and high time in the attacking third "
+                        "mark you as a dangerous wide threat who stretches defences.")
+        traits       = ["Explosive acceleration", "Attacks wide channels", "Direct, fast-break style"]
+
+    elif att_pct >= 35 and sprint_count < 4:
+        archetype    = "Advanced Forward"
+        description  = ("Your positioning in the final third shows a striker's "
+                        "instinct — you find space where it matters most.")
+        traits       = ["Strong goal-area presence", "Clinical positioning", "Arrives late into danger areas"]
+
+    elif def_pct >= 45 and has_pass and pass_pct >= 70:
+        archetype    = "Deep-Lying Playmaker"
+        description  = ("High defensive presence combined with accurate distribution "
+                        "marks you as the player who dictates tempo from deep.")
+        traits       = ["Ball retention under pressure", "Builds from the back", "High passing accuracy"]
+
+    elif aerials >= 3:
+        archetype    = "Aerial Threat / Target Man"
+        description  = ("Your aerial duel involvement suggests a physically dominant "
+                        "presence — a genuine target for long balls and set pieces.")
+        traits       = ["Wins aerial duels", "Holds up play", "Set-piece danger"]
+
+    elif def_pct >= 45:
+        archetype    = "Defensive Midfielder / Centre-Back"
+        description  = ("Your dominant time in the defensive third shows a disciplined, "
+                        "defensive-minded player who protects the backline.")
+        traits       = ["Reads danger early", "Wins the ball back", "Screens the defence"]
+
+    elif mid_pct >= 45 and sprint_count >= 3:
+        archetype    = "Box-to-Box Midfielder"
+        description  = ("Your balanced zone coverage and sprint capacity are the hallmarks "
+                        "of a complete midfielder who contributes in all phases.")
+        traits       = ["High stamina", "Contributes offensively and defensively", "Covers every blade of grass"]
+
+    elif mid_pct >= 45 and has_pass and pass_pct >= 68:
+        archetype    = "Central Midfielder / Playmaker"
+        description  = ("Your midfield dominance and tidy passing show a player who "
+                        "controls tempo and connects defence to attack.")
+        traits       = ["Dictates the tempo", "Clean ball distribution", "High football IQ"]
+
+    elif avg_spd >= 2.5 and sprint_count >= 3:
+        archetype    = "High-Press Forward"
+        description  = ("Your relentless movement and sprint capacity suggest a tireless "
+                        "pressing machine who forces mistakes high up the pitch.")
+        traits       = ["Constant pressing", "High work rate", "Forces errors in build-up"]
+
+    else:
+        archetype    = "Dynamic All-Rounder"
+        description  = ("Your balanced contribution across all zones shows a versatile "
+                        "player who adapts to the team's tactical needs.")
+        traits       = ["Versatile and adaptable", "Covers all areas", "Consistent work rate"]
+
+    return {"archetype": archetype, "description": description, "traits": traits}
