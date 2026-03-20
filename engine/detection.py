@@ -5,12 +5,14 @@ from ultralytics import YOLO
 
 @dataclass
 class DetectionConfig:
-    player_model: str = "yolov8x.pt"
-    ball_model: str = "yolov8x.pt"
+    # yolov8s at 640px: ~20x faster than yolov8x@1280px on CPU, still highly
+    # accurate for person detection and ByteTrack-based player tracking.
+    player_model: str = "yolov8s.pt"
+    ball_model: str = "yolov8s.pt"
     player_conf: float = 0.25
     ball_conf: float = 0.08
-    player_imgsz: int = 1280
-    ball_imgsz: int = 1280
+    player_imgsz: int = 640
+    ball_imgsz: int = 640
     person_class_id: int = 0
     sports_ball_class_id: int = 32
     # Ignore detections whose centre is in the top N% of the frame.

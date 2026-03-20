@@ -100,6 +100,9 @@ def _save_upload_to_tmp(video: UploadFile, uid: str) -> str:
 
 # ── background pipeline task ──────────────────────────────────────────────────
 
+_ANALYSIS_TIMEOUT_S = 15 * 60  # 15 minutes hard cap
+
+
 async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
                         click_x: Optional[float] = None,
                         click_y: Optional[float] = None,
@@ -114,23 +117,39 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
                 _jobs[job_id] = {"pct": pct, "stage": stage}
 
         loop = asyncio.get_event_loop()
-        result_obj = await loop.run_in_executor(
-            None, partial(run_pipeline, video_path, config, run_id=job_id,
-                          progress_cb=on_progress, click_x=click_x, click_y=click_y,
-                          jersey_color=jersey_color)
-        )
+
+        # ── Pipeline (hard 15-minute cap) ──────────────────────────────────
+        try:
+            result_obj = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, partial(run_pipeline, video_path, config, run_id=job_id,
+                                  progress_cb=on_progress, click_x=click_x, click_y=click_y,
+                                  jersey_color=jersey_color)
+                ),
+                timeout=_ANALYSIS_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            log.error("[%s] pipeline timed out after %ds", job_id[:8], _ANALYSIS_TIMEOUT_S)
+            with _jobs_lock:
+                _jobs[job_id] = {
+                    "pct": 0, "stage": "error",
+                    "error": f"Analysis timed out after {_ANALYSIS_TIMEOUT_S // 60} minutes. "
+                             "Try a shorter clip (under 30 s) or increase frame skip.",
+                }
+            return
 
         result_dict = result_obj.to_dict()
         if player_info:
             result_dict["player_info"] = player_info
 
-        # ── AI match analysis ──────────────────────────────────────────────
+        # ── AI match analysis (60-second cap) ─────────────────────────────
         with _jobs_lock:
             _jobs[job_id] = {"pct": 95, "stage": "ai_analysis"}
 
         try:
-            match_analysis = await loop.run_in_executor(
-                None, generate_match_analysis, result_dict
+            match_analysis = await asyncio.wait_for(
+                loop.run_in_executor(None, generate_match_analysis, result_dict),
+                timeout=60.0,
             )
             result_dict["match_analysis"] = match_analysis
             log.info(
@@ -140,6 +159,8 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
                 match_analysis.get("actions", {}).get("positive_count", 0),
                 match_analysis.get("actions", {}).get("negative_count", 0),
             )
+        except asyncio.TimeoutError:
+            log.warning("[%s] AI analysis timed out after 60s — skipping", job_id[:8])
         except Exception as exc:
             log.warning("[%s] match analysis failed: %s", job_id[:8], exc)
 
@@ -147,7 +168,6 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
             _jobs[job_id] = {"pct": 100, "stage": "done", "result": result_dict}
 
         log.info("[%s] analysis done  %.2fs", job_id[:8], time.time() - t0)
-        asyncio.create_task(_schedule_job_cleanup(job_id, delay=300))
 
     except Exception as exc:
         log.exception("[%s] analysis failed", job_id[:8])
@@ -155,6 +175,11 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
             _jobs[job_id] = {"pct": 0, "stage": "error", "error": str(exc)}
     finally:
         _cleanup(video_path)
+        # create_task lives OUTSIDE the try so a failure here never corrupts job state
+        try:
+            asyncio.create_task(_schedule_job_cleanup(job_id, delay=300))
+        except RuntimeError:
+            pass  # event loop already closed (e.g. during shutdown)
 
 
 # ── routes ────────────────────────────────────────────────────────────────────

@@ -281,7 +281,7 @@ Pas {rating.get('passing', 0):.1f})"""
         "additionalProperties": False,
     }
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=25.0)  # never hang longer than 25s
     response = client.messages.create(
         model=_MODEL,
         max_tokens=1200,

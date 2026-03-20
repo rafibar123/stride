@@ -235,13 +235,18 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
 
             frames_decoded += 1
 
-            if frames_decoded % 25 == 0:
+            # Detailed log every 10 decoded frames
+            if frames_decoded % 10 == 0:
                 elapsed = time.time() - t_loop
                 fps_proc = frames_decoded / max(elapsed, 1e-6)
-                log.info("[%s] frame %d/%d  decoded=%d  %.1f frames/s",
-                         run_id, frame_idx, min(max_frames, total_frames or max_frames),
-                         frames_decoded, fps_proc)
-                # 10-88% maps to the frame loop; use frame_idx / max_frames as the driver
+                total_cap = min(max_frames, total_frames or max_frames)
+                pct_done = frame_idx / max(max_frames, 1) * 100
+                log.info("[%s] frame %d/%d (%.0f%%)  decoded=%d  %.2f frames/s  elapsed=%.1fs",
+                         run_id, frame_idx, total_cap, pct_done,
+                         frames_decoded, fps_proc, elapsed)
+
+            # Report progress every 5 decoded frames for smooth frontend updates
+            if frames_decoded % 5 == 0:
                 loop_pct = frame_idx / max(max_frames, 1)
                 stage = "tracking" if loop_pct > 0.3 else "detecting"
                 _report(10 + loop_pct * 78, stage)
