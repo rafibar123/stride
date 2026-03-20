@@ -1,4 +1,4 @@
 [deploy]
-startCommand = "python start.py"
+startCommand = "python3 start.py"
 healthcheckPath = "/health"
-healthcheckTimeout = 60
+healthcheckTimeout = 120

@@ -1,2 +1,5 @@
+[phases.setup]
+nixPkgs = ["python311", "gcc", "libGL"]
+
 [start]
-cmd = "python start.py"
+cmd = "python3 start.py"
