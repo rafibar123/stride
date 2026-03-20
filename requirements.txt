@@ -5,11 +5,6 @@ python-multipart==0.0.20
 starlette==0.49.3
 
 # ── Computer vision / ML ─────────────────────────────────────────────────────
-# Railway runs CPU-only; torch[cpu] keeps the image size manageable.
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.8.0+cpu
-torchvision==0.23.0+cpu
-
 ultralytics==8.4.22
 opencv-python-headless==4.13.0.92
 pillow==11.3.0
@@ -20,7 +15,7 @@ reportlab==4.4.10
 matplotlib==3.9.4
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-scipy==1.13.1
+scipy==1.11.4
 
 # ── AI analysis ──────────────────────────────────────────────────────────────
 anthropic>=0.50.0
