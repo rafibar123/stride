@@ -245,11 +245,10 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                          run_id, frame_idx, total_cap, pct_done,
                          frames_decoded, fps_proc, elapsed)
 
-            # Report progress every 5 decoded frames for smooth frontend updates
-            if frames_decoded % 5 == 0:
-                loop_pct = frame_idx / max(max_frames, 1)
-                stage = "tracking" if loop_pct > 0.3 else "detecting"
-                _report(10 + loop_pct * 78, stage)
+            # Report progress on every decoded frame for smooth frontend updates
+            loop_pct = frame_idx / max(max_frames, 1)
+            stage = "tracking" if loop_pct > 0.3 else "detecting"
+            _report(10 + loop_pct * 78, stage)
 
             if first_frame is None:
                 first_frame = frame.copy()
@@ -384,12 +383,20 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
         if pitch_calibrator.is_ready():
             pitch_xy = pitch_calibrator.pixel_to_pitch(tr["x"], tr["y"])
             if pitch_xy is not None:
-                tr["pitch_x"] = round(float(pitch_xy[0]), 3)
-                tr["pitch_y"] = round(float(pitch_xy[1]), 3)
+                tr["pitch_x"]     = round(float(pitch_xy[0]), 3)
+                tr["pitch_y"]     = round(float(pitch_xy[1]), 3)
+                tr["_homography"] = True
+            else:
+                # Point is outside the mapped area — normalised coords for zones only
+                tr["pitch_x"]     = round(tr["x"] / max(width, 1) * 105.0, 3)
+                tr["pitch_y"]     = round(tr["y"] / max(height, 1) * 68.0, 3)
+                tr["_homography"] = False
         else:
-            # Normalise pixel → pitch space so zone_frames are always populated
-            tr["pitch_x"] = round(tr["x"] / max(width, 1) * 105.0, 3)
-            tr["pitch_y"] = round(tr["y"] / max(height, 1) * 68.0, 3)
+            # No calibration — normalised pixel coords for zone tracking only.
+            # _homography=False tells WorldMetrics to use meters_per_pixel instead.
+            tr["pitch_x"]     = round(tr["x"] / max(width, 1) * 105.0, 3)
+            tr["pitch_y"]     = round(tr["y"] / max(height, 1) * 68.0, 3)
+            tr["_homography"] = False
 
     motion_metrics = world_metrics.compute_track_metrics(tracks, fps, config.meters_per_pixel)
     per_player_metrics = world_metrics.compute_per_player_metrics(tracks, fps, config.meters_per_pixel)

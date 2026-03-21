@@ -1,8 +1,11 @@
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
+import logging
 import math
 import numpy as np
 import cv2
+
+log = logging.getLogger("pitch")
 
 
 PITCH_ZONES = {
@@ -19,10 +22,7 @@ class PitchConfig:
     min_green_ratio: float = 0.12
     sample_every_n_frames: int = 10
     use_bottom_center: bool = True
-    # Set False for angled / side-view cameras (e.g. TikTok).
-    # Homography from a bounding-box estimate is unreliable at angles;
-    # disabling it forces pixel-based distance scaling instead.
-    enabled: bool = False
+    enabled: bool = True
 
 
 class PitchCalibrator:
@@ -69,16 +69,112 @@ class PitchCalibrator:
         x, y, bw, bh = cv2.boundingRect(c)
         return x, y, bw, bh
 
+    def _white_mask(self, frame: np.ndarray, green_mask: np.ndarray) -> np.ndarray:
+        """Return mask of white pixels that lie on or near the green pitch area."""
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        white = cv2.inRange(hsv, np.array([0, 0, 170], dtype=np.uint8),
+                                 np.array([180, 55, 255], dtype=np.uint8))
+        dilated = cv2.dilate(green_mask, np.ones((20, 20), np.uint8), iterations=1)
+        return cv2.bitwise_and(white, dilated)
+
+    def _estimate_from_lines(self, frame: np.ndarray) -> bool:
+        """
+        Calibrate using white pitch line detection (Hough).
+
+        Strategy for side-on cameras:
+          1. Find near-horizontal white lines (touchlines).
+          2. The two most vertically-separated ones define the pitch width (68 m).
+          3. Their combined x-span defines the visible pitch length portion.
+
+        Returns True and sets h_matrix when successful.
+        """
+        h, w = frame.shape[:2]
+        green_mask = self._green_mask(frame)
+        white = self._white_mask(frame, green_mask)
+
+        if white.sum() // 255 < 300:
+            return False
+
+        edges = cv2.Canny(white, 50, 150, apertureSize=3)
+        min_line_len = max(w // 10, 40)
+        lines = cv2.HoughLinesP(
+            edges, rho=1, theta=np.pi / 180,
+            threshold=40, minLineLength=min_line_len, maxLineGap=25,
+        )
+        if lines is None or len(lines) < 2:
+            return False
+
+        # Keep only near-horizontal lines (|angle| < 20°)
+        h_lines = []
+        for seg in lines:
+            x1, y1, x2, y2 = seg[0]
+            dx = x2 - x1
+            if dx == 0:
+                continue
+            angle = abs(math.degrees(math.atan2(abs(y2 - y1), abs(dx))))
+            if angle < 20:
+                h_lines.append((x1, y1, x2, y2))
+
+        if len(h_lines) < 2:
+            return False
+
+        # Cluster lines by vertical position to find two distinct touchlines
+        h_lines.sort(key=lambda l: (l[1] + l[3]) / 2)
+        top_line  = h_lines[0]
+        bot_line  = h_lines[-1]
+        top_y = (top_line[1] + top_line[3]) / 2.0
+        bot_y = (bot_line[1] + bot_line[3]) / 2.0
+
+        # Require a meaningful vertical separation
+        if bot_y - top_y < h * 0.12:
+            return False
+
+        # x-extent from all detected horizontal lines
+        all_x = [l[0] for l in h_lines] + [l[2] for l in h_lines]
+        left_x  = float(min(all_x))
+        right_x = float(max(all_x))
+
+        if right_x - left_x < w * 0.25:
+            return False
+
+        src = np.array([
+            [left_x,  top_y],
+            [right_x, top_y],
+            [right_x, bot_y],
+            [left_x,  bot_y],
+        ], dtype=np.float32)
+
+        dst = np.array([
+            [0.0,                          0.0],
+            [self.config.pitch_length_m,   0.0],
+            [self.config.pitch_length_m,   self.config.pitch_width_m],
+            [0.0,                          self.config.pitch_width_m],
+        ], dtype=np.float32)
+
+        h_matrix = cv2.getPerspectiveTransform(src, dst)
+        if h_matrix is None:
+            return False
+
+        self.h_matrix      = h_matrix
+        self.last_src_quad = src
+        self.last_dst_quad = dst
+        log.info("pitch calibrated via line detection  top_y=%.0f  bot_y=%.0f  x=[%.0f,%.0f]",
+                 top_y, bot_y, left_x, right_x)
+        return True
+
     def estimate_from_frame(self, frame: np.ndarray) -> bool:
         if frame is None or frame.size == 0:
             return False
+
+        # Prefer line-based calibration; fall back to green bounding box.
+        if self._estimate_from_lines(frame):
+            return True
 
         h, w = frame.shape[:2]
         mask = self._green_mask(frame)
         bbox = self._largest_contour_bbox(mask)
 
         if bbox is None:
-            # fallback: use image margins as approximate pitch
             src = np.array([
                 [w * 0.05, h * 0.15],
                 [w * 0.95, h * 0.15],
@@ -87,8 +183,6 @@ class PitchCalibrator:
             ], dtype=np.float32)
         else:
             x, y, bw, bh = bbox
-
-            # trapezoid approximation - perspective pitch
             src = np.array([
                 [x + bw * 0.08, y + bh * 0.06],
                 [x + bw * 0.92, y + bh * 0.06],
@@ -97,19 +191,20 @@ class PitchCalibrator:
             ], dtype=np.float32)
 
         dst = np.array([
-            [0.0, 0.0],
+            [0.0,                        0.0],
             [self.config.pitch_length_m, 0.0],
             [self.config.pitch_length_m, self.config.pitch_width_m],
-            [0.0, self.config.pitch_width_m],
+            [0.0,                        self.config.pitch_width_m],
         ], dtype=np.float32)
 
         h_matrix = cv2.getPerspectiveTransform(src, dst)
         if h_matrix is None:
             return False
 
-        self.h_matrix = h_matrix
+        self.h_matrix      = h_matrix
         self.last_src_quad = src
         self.last_dst_quad = dst
+        log.info("pitch calibrated via green bbox  src=%s", src.tolist())
         return True
 
     def is_ready(self) -> bool:
@@ -202,11 +297,12 @@ class WorldMetrics:
     def _step_distance(p0: Dict, p1: Dict, mpp: float) -> float:
         """Return real-world distance (metres) between two track points.
 
-        Uses pitch-calibrated coordinates when available; falls back to
-        pixel-centre distance scaled by *mpp* (metres-per-pixel) for
-        angled / uncalibrated cameras.
+        Uses pitch-calibrated homography coordinates only when BOTH points
+        were mapped via a real perspective transform (_homography=True).
+        Falls back to pixel distance × mpp for uncalibrated/normalised coords.
         """
-        if "pitch_x" in p0 and "pitch_x" in p1:
+        if (p0.get("_homography") and p1.get("_homography")
+                and "pitch_x" in p0 and "pitch_x" in p1):
             dx = p1["pitch_x"] - p0["pitch_x"]
             dy = p1["pitch_y"] - p0["pitch_y"]
         else:
@@ -256,7 +352,9 @@ class WorldMetrics:
         return {
             "player_count": len(by_track),
             "total_distance_m": round(total_distance, 2),
+            "total_distance_km": round(total_distance / 1000.0, 4),
             "max_speed_mps": round(max_speed, 2),
+            "max_speed_kmh": round(max_speed * 3.6, 1),
             "sprint_count": int(sprint_count),
         }
 
@@ -373,8 +471,11 @@ class WorldMetrics:
                 "track_id": tid,
                 "team_id": team_id,
                 "distance_m": round(total_dist, 2),
+                "distance_km": round(total_dist / 1000.0, 4),
                 "avg_speed_mps": round(avg_spd, 3),
+                "avg_speed_kmh": round(avg_spd * 3.6, 1),
                 "max_speed_mps": round(max_spd, 3),
+                "max_speed_kmh": round(max_spd * 3.6, 1),
                 "sprint_count": sprint_count,
                 "zone_frames": zone_frames,
                 "total_frames": len(points),
