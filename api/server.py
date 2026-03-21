@@ -21,6 +21,8 @@ from functools import partial
 from threading import Lock
 from typing import Optional
 
+import httpx
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 try:
@@ -42,6 +44,8 @@ try:
 except Exception as _engine_err:
     _ENGINE_OK = False
     print(f"[server] WARNING: engine import failed: {_engine_err}", flush=True)
+
+MODAL_ENDPOINT = os.environ.get("MODAL_ENDPOINT", "").strip() or None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -113,6 +117,63 @@ def _save_upload_to_tmp(video: UploadFile, uid: str) -> str:
 _ANALYSIS_TIMEOUT_S = 15 * 60  # 15 minutes hard cap
 
 
+async def _call_modal(
+    job_id: str,
+    video_path: str,
+    frame_skip: int,
+    click_x: Optional[float],
+    click_y: Optional[float],
+    jersey_color: Optional[str],
+) -> dict:
+    """Send video to Modal GPU worker and return the result dict."""
+
+    def _set(pct: float, stage: str) -> None:
+        with _jobs_lock:
+            _jobs[job_id] = {"pct": pct, "stage": stage}
+
+    _set(5, "uploading_to_gpu")
+    log.info("[%s] sending to Modal GPU  endpoint=%s", job_id[:8], MODAL_ENDPOINT)
+
+    # Bump progress every 10 s while we wait so the UI doesn't look frozen.
+    async def _ticker() -> None:
+        pct = 10.0
+        while True:
+            await asyncio.sleep(10)
+            pct = min(pct + 5, 88)
+            _set(pct, "gpu_processing")
+
+    ticker = asyncio.create_task(_ticker())
+    try:
+        data = {
+            "frame_skip": str(frame_skip),
+            "click_x":    str(click_x  if click_x   is not None else 0.5),
+            "click_y":    str(click_y  if click_y   is not None else 0.5),
+        }
+        if jersey_color:
+            data["jersey_color"] = jersey_color
+
+        with open(video_path, "rb") as fh:
+            video_bytes = fh.read()
+
+        async with httpx.AsyncClient(timeout=660) as client:
+            resp = await client.post(
+                MODAL_ENDPOINT,
+                data=data,
+                files={"video": ("video.mp4", video_bytes, "video/mp4")},
+            )
+        resp.raise_for_status()
+        result = resp.json()
+
+    finally:
+        ticker.cancel()
+
+    if result.get("status") == "error" or "error" in result:
+        raise RuntimeError(result.get("error", "Modal worker returned an error"))
+
+    log.info("[%s] Modal GPU done", job_id[:8])
+    return result
+
+
 async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
                         click_x: Optional[float] = None,
                         click_y: Optional[float] = None,
@@ -120,35 +181,49 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
                         player_info: Optional[dict] = None) -> None:
     t0 = time.time()
     try:
-        config = PipelineConfig(frame_skip=frame_skip)
-
         def on_progress(pct: float, stage: str) -> None:
             with _jobs_lock:
                 _jobs[job_id] = {"pct": pct, "stage": stage}
 
         loop = asyncio.get_event_loop()
 
-        # ── Pipeline (hard 15-minute cap) ──────────────────────────────────
-        try:
-            result_obj = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, partial(run_pipeline, video_path, config, run_id=job_id,
-                                  progress_cb=on_progress, click_x=click_x, click_y=click_y,
-                                  jersey_color=jersey_color)
-                ),
-                timeout=_ANALYSIS_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            log.error("[%s] pipeline timed out after %ds", job_id[:8], _ANALYSIS_TIMEOUT_S)
-            with _jobs_lock:
-                _jobs[job_id] = {
-                    "pct": 0, "stage": "error",
-                    "error": f"Analysis timed out after {_ANALYSIS_TIMEOUT_S // 60} minutes. "
-                             "Try a shorter clip (under 30 s) or increase frame skip.",
-                }
-            return
-
-        result_dict = result_obj.to_dict()
+        if MODAL_ENDPOINT:
+            # ── GPU path (Modal) ───────────────────────────────────────────
+            try:
+                result_dict = await asyncio.wait_for(
+                    _call_modal(job_id, video_path, frame_skip, click_x, click_y, jersey_color),
+                    timeout=_ANALYSIS_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                log.error("[%s] Modal timed out after %ds", job_id[:8], _ANALYSIS_TIMEOUT_S)
+                with _jobs_lock:
+                    _jobs[job_id] = {
+                        "pct": 0, "stage": "error",
+                        "error": f"Analysis timed out after {_ANALYSIS_TIMEOUT_S // 60} minutes.",
+                    }
+                return
+        else:
+            # ── CPU path (local fallback) ──────────────────────────────────
+            config = PipelineConfig(frame_skip=frame_skip)
+            try:
+                result_obj = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, partial(run_pipeline, video_path, config, run_id=job_id,
+                                      progress_cb=on_progress, click_x=click_x, click_y=click_y,
+                                      jersey_color=jersey_color)
+                    ),
+                    timeout=_ANALYSIS_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                log.error("[%s] pipeline timed out after %ds", job_id[:8], _ANALYSIS_TIMEOUT_S)
+                with _jobs_lock:
+                    _jobs[job_id] = {
+                        "pct": 0, "stage": "error",
+                        "error": f"Analysis timed out after {_ANALYSIS_TIMEOUT_S // 60} minutes. "
+                                 "Try a shorter clip (under 30 s) or increase frame skip.",
+                    }
+                return
+            result_dict = result_obj.to_dict()
         if player_info:
             result_dict["player_info"] = player_info
 
