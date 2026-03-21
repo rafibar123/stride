@@ -1,22 +1,21 @@
 """
-Modal GPU worker for Stride.
+Modal GPU worker for Stride — app: stride-ai
 
 Deploy:
     modal deploy modal_app.py
 
-After deploying, copy the printed endpoint URL and set it as the
-MODAL_ENDPOINT environment variable in Railway.
+Copy the printed endpoint URL → set MODAL_ENDPOINT in Railway env vars.
 """
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
 import uuid
-from typing import Optional
 
 import modal
-from fastapi import File, Form, UploadFile
 
-app = modal.App("stride")
+app = modal.App("stride-ai")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -34,6 +33,11 @@ image = (
     .add_local_dir("engine", remote_path="/root/engine")
 )
 
+# FastAPI's Request is only available inside the container image.
+# `with image.imports()` defers the import to container runtime.
+with image.imports():
+    from fastapi import Request
+
 
 @app.function(
     image=image,
@@ -42,23 +46,41 @@ image = (
     min_containers=0,
 )
 @modal.fastapi_endpoint(method="POST")
-async def analyze_video(
-    video: UploadFile = File(...),
-    frame_skip: int = Form(10),
-    click_x: float = Form(0.5),
-    click_y: float = Form(0.5),
-    jersey_color: Optional[str] = Form(None),
-):
+async def analyze_video(request: Request):
+    """
+    Accepts multipart/form-data:
+      video       — .mp4 file (required)
+      frame_skip  — int 1-10 (default 10)
+      click_x     — float 0-1 (default 0.5)
+      click_y     — float 0-1 (default 0.5)
+      jersey_color — hex string (optional)
+
+    Returns the full pipeline result dict or {"status":"error","error":"..."}.
+    """
     sys.path.insert(0, "/root")
     from engine.pipeline import PipelineConfig, run_pipeline  # noqa: PLC0415
+
+    form = await request.form()
+
+    video_file = form.get("video")
+    if video_file is None:
+        return {"status": "error", "error": "missing 'video' field in form"}
+
+    contents = await video_file.read()
+    if not contents:
+        return {"status": "error", "error": "video file is empty"}
+
+    frame_skip   = int(form.get("frame_skip", 10))
+    click_x      = float(form.get("click_x", 0.5))
+    click_y      = float(form.get("click_y", 0.5))
+    jersey_color = form.get("jersey_color") or None
 
     run_id = str(uuid.uuid4())
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4", prefix=f"stride_{run_id}_")
     try:
         os.close(fd)
-        contents = await video.read()
-        with open(tmp_path, "wb") as f:
-            f.write(contents)
+        with open(tmp_path, "wb") as fh:
+            fh.write(contents)
 
         config = PipelineConfig(frame_skip=max(1, min(10, frame_skip)))
         result = run_pipeline(
