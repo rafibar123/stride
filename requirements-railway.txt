@@ -3,6 +3,4 @@ uvicorn==0.30.0
 python-multipart==0.0.9
 anthropic>=0.50.0
 pillow==11.3.0
-numpy==1.26.4
-opencv-python-headless==4.13.0.92
 matplotlib==3.9.4
