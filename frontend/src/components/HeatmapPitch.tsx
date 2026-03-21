@@ -60,19 +60,20 @@ function gaussianBlur2D(
   return dst;
 }
 
-// ── Colormap: transparent → green → yellow-green → yellow → orange → red ─────
+// ── Colormap: transparent → blue → cyan → green → yellow → orange → red ──────
 
 function colormap(t: number): [number, number, number, number] {
-  if (t < 0.02) return [0, 0, 0, 0];
+  if (t < 0.015) return [0, 0, 0, 0];
 
-  // [threshold, r, g, b, alpha]
+  // [threshold, r, g, b, alpha]  — blue (cold) → red (hot)
   const stops: [number, number, number, number, number][] = [
-    [0.02, 0,   210,  90, 0.28],
-    [0.18, 0,   230, 100, 0.52],
-    [0.38, 140, 230,   0, 0.66],
-    [0.58, 255, 200,   0, 0.76],
-    [0.78, 255,  70,   0, 0.83],
-    [1.00, 255,   0,   0, 0.90],
+    [0.015,   0,  20, 200, 0.32],
+    [0.18,    0,  80, 255, 0.52],
+    [0.36,    0, 210, 230, 0.66],
+    [0.54,   60, 230,  60, 0.75],
+    [0.70,  255, 220,   0, 0.82],
+    [0.85,  255,  90,   0, 0.88],
+    [1.00,  255,   0,   0, 0.93],
   ];
 
   for (let i = 0; i < stops.length - 1; i++) {
@@ -88,7 +89,7 @@ function colormap(t: number): [number, number, number, number] {
       ];
     }
   }
-  return [255, 0, 0, 0.90];
+  return [255, 0, 0, 0.93];
 }
 
 // ── Pitch drawing ─────────────────────────────────────────────────────────────
@@ -169,9 +170,22 @@ function drawPitch(ctx: CanvasRenderingContext2D, W: number, H: number) {
   arc(11, PITCH_W / 2, aR, -aOff, aOff);
   arc(PITCH_L - 11, PITCH_W / 2, aR, Math.PI - aOff, Math.PI + aOff);
 
+  // Corner arcs (radius 1 m)
+  const cr = 1;
+  const cornerArc = (cx: number, cy: number, startA: number) => {
+    ctx.beginPath();
+    ctx.arc(px(cx), py(cy), (cr / PITCH_L) * W, startA, startA + Math.PI / 2);
+    ctx.stroke();
+  };
+  ctx.strokeStyle = 'rgba(255,255,255,0.70)';
+  cornerArc(0,       0,       0);
+  cornerArc(PITCH_L, 0,       Math.PI / 2);
+  cornerArc(PITCH_L, PITCH_W, Math.PI);
+  cornerArc(0,       PITCH_W, -Math.PI / 2);
+
   // Zone thirds (dashed)
-  ctx.strokeStyle = 'rgba(255,255,255,0.20)';
-  ctx.setLineDash([5, 5]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.setLineDash([4, 6]);
   line(35, 0, 35, PITCH_W);
   line(70, 0, 70, PITCH_W);
   ctx.setLineDash([]);
@@ -326,13 +340,13 @@ export default function HeatmapPitch({ points }: Props) {
         }
         .hm-leg-label { font-size: 10px; }
         .hm-leg-bar {
-          width: 90px; height: 8px; border-radius: 4px;
+          width: 100px; height: 8px; border-radius: 4px;
           background: linear-gradient(90deg,
-            transparent 0%,
-            rgba(0,230,100,.6) 20%,
-            rgba(200,230,0,.8) 45%,
-            rgba(255,140,0,.85) 70%,
-            rgba(255,0,0,.9) 100%);
+            rgba(0,20,200,.45)   0%,
+            rgba(0,210,230,.70) 35%,
+            rgba(255,220,0,.85) 65%,
+            rgba(255,90,0,.90)  82%,
+            rgba(255,0,0,.93)  100%);
           border: 1px solid rgba(255,255,255,.1);
         }
 
