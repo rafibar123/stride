@@ -18,7 +18,7 @@ import HeatmapPitch from './components/HeatmapPitch';
 
 import type { AnalysisResult, AnalysisStage, ManualStats, PlayerProfile } from './types';
 
-const API = 'http://127.0.0.1:8000';
+const API = 'https://web-production-c4e3a.up.railway.app';
 
 export default function App() {
   const [file, setFile] = useState<File | null>(null);

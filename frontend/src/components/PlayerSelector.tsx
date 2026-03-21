@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Play, RotateCcw, Loader2 } from 'lucide-react';
 
-const API = 'http://127.0.0.1:8000';
+const API = 'https://web-production-c4e3a.up.railway.app';
 
 interface Props {
   file: File;
