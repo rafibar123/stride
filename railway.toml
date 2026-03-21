@@ -1,3 +1,6 @@
+[build]
+builder = "dockerfile"
+
 [deploy]
 startCommand = "python3 start.py"
 healthcheckPath = "/health"
