@@ -70,10 +70,11 @@ async def analyze_video(request: Request):
     if not contents:
         return {"status": "error", "error": "video file is empty"}
 
-    frame_skip   = int(form.get("frame_skip", 10))
-    click_x      = float(form.get("click_x", 0.5))
-    click_y      = float(form.get("click_y", 0.5))
-    jersey_color = form.get("jersey_color") or None
+    frame_skip       = int(form.get("frame_skip", 10))
+    click_x          = float(form.get("click_x", 0.5))
+    click_y          = float(form.get("click_y", 0.5))
+    jersey_color     = form.get("jersey_color") or None
+    max_duration_s   = float(form.get("max_duration_s", 300))  # GPU default: 5 min
 
     run_id = str(uuid.uuid4())
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4", prefix=f"stride_{run_id}_")
@@ -82,7 +83,10 @@ async def analyze_video(request: Request):
         with open(tmp_path, "wb") as fh:
             fh.write(contents)
 
-        config = PipelineConfig(frame_skip=max(1, min(10, frame_skip)))
+        config = PipelineConfig(
+            frame_skip=max(1, min(10, frame_skip)),
+            max_duration_s=max(10, min(600, max_duration_s)),  # cap at 10 min
+        )
         result = run_pipeline(
             tmp_path, config,
             run_id=run_id,

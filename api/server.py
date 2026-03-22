@@ -124,6 +124,7 @@ async def _call_modal(
     click_x: Optional[float],
     click_y: Optional[float],
     jersey_color: Optional[str],
+    max_duration_s: float = 300.0,
 ) -> dict:
     """Send video to Modal GPU worker and return the result dict."""
 
@@ -132,22 +133,25 @@ async def _call_modal(
             _jobs[job_id] = {"pct": pct, "stage": stage}
 
     _set(5, "uploading_to_gpu")
-    log.info("[%s] sending to Modal GPU  endpoint=%s", job_id[:8], MODAL_ENDPOINT)
+    file_size_mb = os.path.getsize(video_path) / 1024 / 1024
+    log.info("[%s] sending to Modal GPU  endpoint=%s  size=%.1fMB  max_dur=%.0fs",
+             job_id[:8], MODAL_ENDPOINT, file_size_mb, max_duration_s)
 
     # Bump progress every 10 s while we wait so the UI doesn't look frozen.
     async def _ticker() -> None:
         pct = 10.0
         while True:
             await asyncio.sleep(10)
-            pct = min(pct + 5, 88)
+            pct = min(pct + 3, 88)
             _set(pct, "gpu_processing")
 
     ticker = asyncio.create_task(_ticker())
     try:
         data = {
-            "frame_skip": str(frame_skip),
-            "click_x":    str(click_x  if click_x   is not None else 0.5),
-            "click_y":    str(click_y  if click_y   is not None else 0.5),
+            "frame_skip":     str(frame_skip),
+            "click_x":        str(click_x  if click_x   is not None else 0.5),
+            "click_y":        str(click_y  if click_y   is not None else 0.5),
+            "max_duration_s": str(max_duration_s),
         }
         if jersey_color:
             data["jersey_color"] = jersey_color
@@ -155,7 +159,9 @@ async def _call_modal(
         with open(video_path, "rb") as fh:
             video_bytes = fh.read()
 
-        async with httpx.AsyncClient(timeout=660) as client:
+        # Timeout = video duration cap + 120s upload/cold-start buffer
+        http_timeout = max_duration_s + 120
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             resp = await client.post(
                 MODAL_ENDPOINT,
                 data=data,
@@ -172,6 +178,10 @@ async def _call_modal(
 
     log.info("[%s] Modal GPU done", job_id[:8])
     return result
+
+
+_GPU_MAX_DURATION_S = 300.0   # 5-minute cap on Modal GPU
+_CPU_MAX_DURATION_S  = 30.0   # 30-second cap on Railway CPU fallback
 
 
 async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
@@ -191,7 +201,8 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
             # ── GPU path (Modal) ───────────────────────────────────────────
             try:
                 result_dict = await asyncio.wait_for(
-                    _call_modal(job_id, video_path, frame_skip, click_x, click_y, jersey_color),
+                    _call_modal(job_id, video_path, frame_skip, click_x, click_y,
+                                jersey_color, max_duration_s=_GPU_MAX_DURATION_S),
                     timeout=_ANALYSIS_TIMEOUT_S,
                 )
             except asyncio.TimeoutError:
@@ -204,7 +215,7 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
                 return
         else:
             # ── CPU path (local fallback) ──────────────────────────────────
-            config = PipelineConfig(frame_skip=frame_skip)
+            config = PipelineConfig(frame_skip=frame_skip, max_duration_s=_CPU_MAX_DURATION_S)
             try:
                 result_obj = await asyncio.wait_for(
                     loop.run_in_executor(
