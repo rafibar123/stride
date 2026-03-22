@@ -6,11 +6,12 @@ interface Props {
   pitchWidth?: number;
 }
 
-// Pitch dimensions in metres
 const PITCH_L = 105;
 const PITCH_W = 68;
+const GRID_COLS = 105;
+const GRID_ROWS = 68;
 
-// ── Separable Gaussian blur ───────────────────────────────────────────────────
+// ── Gaussian blur (separable) ─────────────────────────────────────────────────
 
 function gaussKernel(sigma: number, radius: number): Float32Array {
   const k = new Float32Array(radius * 2 + 1);
@@ -23,17 +24,10 @@ function gaussKernel(sigma: number, radius: number): Float32Array {
   return k;
 }
 
-function gaussianBlur2D(
-  src: Float32Array,
-  cols: number,
-  rows: number,
-  sigma: number,
-): Float32Array {
+function gaussianBlur2D(src: Float32Array, cols: number, rows: number, sigma: number): Float32Array {
   const radius = Math.ceil(sigma * 2.5);
   const k = gaussKernel(sigma, radius);
   const tmp = new Float32Array(cols * rows);
-
-  // horizontal pass
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
       let v = 0;
@@ -44,8 +38,6 @@ function gaussianBlur2D(
       tmp[y * cols + x] = v;
     }
   }
-
-  // vertical pass
   const dst = new Float32Array(cols * rows);
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
@@ -60,22 +52,19 @@ function gaussianBlur2D(
   return dst;
 }
 
-// ── Colormap: transparent → blue → cyan → green → yellow → orange → red ──────
+// ── Colormap: transparent → blue → cyan → yellow → red ───────────────────────
 
 function colormap(t: number): [number, number, number, number] {
   if (t < 0.015) return [0, 0, 0, 0];
-
-  // [threshold, r, g, b, alpha]  — blue (cold) → red (hot)
   const stops: [number, number, number, number, number][] = [
-    [0.015,   0,  20, 200, 0.32],
-    [0.18,    0,  80, 255, 0.52],
-    [0.36,    0, 210, 230, 0.66],
-    [0.54,   60, 230,  60, 0.75],
-    [0.70,  255, 220,   0, 0.82],
-    [0.85,  255,  90,   0, 0.88],
-    [1.00,  255,   0,   0, 0.93],
+    [0.015,   0,  30, 220, 0.25],
+    [0.18,    0,  90, 255, 0.46],
+    [0.36,    0, 210, 230, 0.60],
+    [0.54,   50, 225,  60, 0.70],
+    [0.70,  255, 215,   0, 0.78],
+    [0.85,  255,  80,   0, 0.86],
+    [1.00,  255,   0,   0, 0.92],
   ];
-
   for (let i = 0; i < stops.length - 1; i++) {
     const [t0, r0, g0, b0, a0] = stops[i];
     const [t1, r1, g1, b1, a1] = stops[i + 1];
@@ -89,7 +78,15 @@ function colormap(t: number): [number, number, number, number] {
       ];
     }
   }
-  return [255, 0, 0, 0.93];
+  return [255, 0, 0, 0.92];
+}
+
+function glowRgb(intensity: number): string {
+  if (intensity > 0.82) return '255,30,30';
+  if (intensity > 0.62) return '255,120,0';
+  if (intensity > 0.42) return '255,210,0';
+  if (intensity > 0.22) return '0,210,170';
+  return '20,110,255';
 }
 
 // ── Pitch drawing ─────────────────────────────────────────────────────────────
@@ -97,136 +94,126 @@ function colormap(t: number): [number, number, number, number] {
 function drawPitch(ctx: CanvasRenderingContext2D, W: number, H: number) {
   const px = (x: number) => (x / PITCH_L) * W;
   const py = (y: number) => (y / PITCH_W) * H;
+  const scale = W / 840;
 
-  // Grass gradient
-  const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0,   '#163516');
-  grad.addColorStop(0.5, '#1a3f1a');
-  grad.addColorStop(1,   '#163516');
-  ctx.fillStyle = grad;
+  // Grass background
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0,   '#0d1f0e');
+  bg.addColorStop(0.5, '#112511');
+  bg.addColorStop(1,   '#0d1f0e');
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
-  // Subtle pitch stripes
-  for (let i = 0; i < 10; i++) {
+  // Alternating mowing stripes
+  const stripes = 10;
+  for (let i = 0; i < stripes; i++) {
     if (i % 2 === 0) {
-      ctx.fillStyle = 'rgba(255,255,255,0.025)';
-      ctx.fillRect(px((PITCH_L / 10) * i), 0, px(PITCH_L / 10), H);
+      ctx.fillStyle = 'rgba(255,255,255,0.024)';
+      ctx.fillRect(px((PITCH_L / stripes) * i), 0, px(PITCH_L / stripes) + 0.5, H);
     }
   }
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.70)';
-  ctx.lineWidth = Math.max(1, W * 0.0025);
+  const lw = Math.max(1.2, W * 0.002);
+  ctx.strokeStyle = 'rgba(255,255,255,0.82)';
+  ctx.lineWidth = lw;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
   const line = (x1: number, y1: number, x2: number, y2: number) => {
     ctx.beginPath(); ctx.moveTo(px(x1), py(y1)); ctx.lineTo(px(x2), py(y2)); ctx.stroke();
   };
-
-  const strokeRect = (x: number, y: number, w: number, h: number) => {
+  const rect = (x: number, y: number, w: number, h: number) => {
     ctx.strokeRect(px(x), py(y), px(x + w) - px(x), py(y + h) - py(y));
   };
-
-  const arc = (cx: number, cy: number, r: number, a0 = 0, a1 = Math.PI * 2) => {
-    ctx.beginPath();
-    ctx.arc(px(cx), py(cy), (r / PITCH_L) * W, a0, a1);
-    ctx.stroke();
+  // Arc uses W-based radius because canvas aspect ratio = pitch aspect ratio
+  const mArc = (cx: number, cy: number, rM: number, a0 = 0, a1 = Math.PI * 2) => {
+    const rPx = (rM / PITCH_L) * W;
+    ctx.beginPath(); ctx.arc(px(cx), py(cy), rPx, a0, a1); ctx.stroke();
+  };
+  const dot = (x: number, y: number, r = 2.8) => {
+    ctx.fillStyle = 'rgba(255,255,255,0.78)';
+    ctx.beginPath(); ctx.arc(px(x), py(y), r * scale, 0, Math.PI * 2); ctx.fill();
   };
 
-  const dot = (x: number, y: number, r = 3) => {
-    ctx.fillStyle = 'rgba(255,255,255,0.65)';
-    ctx.beginPath(); ctx.arc(px(x), py(y), r, 0, Math.PI * 2); ctx.fill();
-  };
-
-  // Boundary
-  strokeRect(0, 0, PITCH_L, PITCH_W);
-  // Halfway line + centre circle + spot
+  // Outer boundary
+  rect(0, 0, PITCH_L, PITCH_W);
+  // Halfway line + centre circle + kick-off spot
   line(PITCH_L / 2, 0, PITCH_L / 2, PITCH_W);
-  arc(PITCH_L / 2, PITCH_W / 2, 9.15);
+  mArc(PITCH_L / 2, PITCH_W / 2, 9.15);
   dot(PITCH_L / 2, PITCH_W / 2);
 
   // Penalty areas
   const paW = 16.5, paH = 40.32, paY = (PITCH_W - paH) / 2;
-  strokeRect(0, paY, paW, paH);
-  strokeRect(PITCH_L - paW, paY, paW, paH);
+  rect(0, paY, paW, paH);
+  rect(PITCH_L - paW, paY, paW, paH);
 
-  // Goal areas
+  // Goal areas (6-yard boxes)
   const gaW = 5.5, gaH = 18.32, gaY = (PITCH_W - gaH) / 2;
-  strokeRect(0, gaY, gaW, gaH);
-  strokeRect(PITCH_L - gaW, gaY, gaW, gaH);
+  rect(0, gaY, gaW, gaH);
+  rect(PITCH_L - gaW, gaY, gaW, gaH);
 
-  // Goals (fainter)
+  // Goals (lighter)
   ctx.strokeStyle = 'rgba(255,255,255,0.35)';
   const goalH = 7.32, goalD = 2.44, goalY = (PITCH_W - goalH) / 2;
-  strokeRect(-goalD, goalY, goalD, goalH);
-  strokeRect(PITCH_L, goalY, goalD, goalH);
-  ctx.strokeStyle = 'rgba(255,255,255,0.70)';
+  rect(-goalD, goalY, goalD, goalH);
+  rect(PITCH_L, goalY, goalD, goalH);
+  ctx.strokeStyle = 'rgba(255,255,255,0.82)';
 
-  // Penalty spots + arcs
+  // Penalty spots + D arcs
   dot(11, PITCH_W / 2);
   dot(PITCH_L - 11, PITCH_W / 2);
   const aR = 9.15;
   const aOff = Math.acos((paW - 11) / aR);
-  arc(11, PITCH_W / 2, aR, -aOff, aOff);
-  arc(PITCH_L - 11, PITCH_W / 2, aR, Math.PI - aOff, Math.PI + aOff);
+  mArc(11, PITCH_W / 2, aR, -aOff, aOff);
+  mArc(PITCH_L - 11, PITCH_W / 2, aR, Math.PI - aOff, Math.PI + aOff);
 
-  // Corner arcs (radius 1 m)
-  const cr = 1;
+  // Corner arcs (1 m)
+  const crPx = (1 / PITCH_L) * W;
   const cornerArc = (cx: number, cy: number, startA: number) => {
-    ctx.beginPath();
-    ctx.arc(px(cx), py(cy), (cr / PITCH_L) * W, startA, startA + Math.PI / 2);
-    ctx.stroke();
+    ctx.beginPath(); ctx.arc(px(cx), py(cy), crPx, startA, startA + Math.PI / 2); ctx.stroke();
   };
-  ctx.strokeStyle = 'rgba(255,255,255,0.70)';
   cornerArc(0,       0,       0);
   cornerArc(PITCH_L, 0,       Math.PI / 2);
   cornerArc(PITCH_L, PITCH_W, Math.PI);
   cornerArc(0,       PITCH_W, -Math.PI / 2);
 
-  // Zone thirds (dashed)
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-  ctx.setLineDash([4, 6]);
+  // Zone-third dashed lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+  ctx.setLineDash([5, 8]);
   line(35, 0, 35, PITCH_W);
   line(70, 0, 70, PITCH_W);
   ctx.setLineDash([]);
 }
 
-// ── Heatmap density → canvas ──────────────────────────────────────────────────
+// ── Build static heatmap layer ────────────────────────────────────────────────
 
-function drawHeatmap(
-  ctx: CanvasRenderingContext2D,
-  W: number,
-  H: number,
-  points: [number, number][],
-) {
-  if (points.length < 3) return;
+interface HeatLayer {
+  canvas: HTMLCanvasElement;
+  blurred: Float32Array;
+  maxVal: number;
+  dots: GlowDot[];
+}
 
-  // 1-cell-per-metre grid for exact pitch mapping
-  const cols = PITCH_L;   // 105
-  const rows = PITCH_W;   // 68
-  const raw = new Float32Array(cols * rows);
+function buildHeatLayer(points: [number, number][]): HeatLayer | null {
+  if (points.length < 3) return null;
 
+  const raw = new Float32Array(GRID_COLS * GRID_ROWS);
   for (const [x, y] of points) {
-    // Points are in pitch metres (0–105, 0–68)
-    const gx = Math.max(0, Math.min(cols - 1, Math.floor((x / PITCH_L) * cols)));
-    const gy = Math.max(0, Math.min(rows - 1, Math.floor((y / PITCH_W) * rows)));
-    raw[gy * cols + gx] += 1;
+    const gx = Math.max(0, Math.min(GRID_COLS - 1, Math.floor((x / PITCH_L) * GRID_COLS)));
+    const gy = Math.max(0, Math.min(GRID_ROWS - 1, Math.floor((y / PITCH_W) * GRID_ROWS)));
+    raw[gy * GRID_COLS + gx] += 1;
   }
-
-  // Separable Gaussian blur — σ=4m gives natural smooth zones
-  const blurred = gaussianBlur2D(raw, cols, rows, 4);
+  const blurred = gaussianBlur2D(raw, GRID_COLS, GRID_ROWS, 4.5);
 
   let maxVal = 0;
   for (let i = 0; i < blurred.length; i++) if (blurred[i] > maxVal) maxVal = blurred[i];
-  if (maxVal === 0) return;
+  if (maxVal === 0) return null;
 
-  // Render density to offscreen canvas
   const off = document.createElement('canvas');
-  off.width = cols;
-  off.height = rows;
+  off.width = GRID_COLS;
+  off.height = GRID_ROWS;
   const octx = off.getContext('2d')!;
-  const img = octx.createImageData(cols, rows);
-
+  const img = octx.createImageData(GRID_COLS, GRID_ROWS);
   for (let i = 0; i < blurred.length; i++) {
     const t = blurred[i] / maxVal;
     const [r, g, b, a] = colormap(t);
@@ -237,33 +224,133 @@ function drawHeatmap(
   }
   octx.putImageData(img, 0, 0);
 
-  // Scale up with bicubic-quality smoothing
-  ctx.save();
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(off, 0, 0, W, H);
-  ctx.restore();
+  return { canvas: off, blurred, maxVal, dots: extractGlowDots(blurred, maxVal) };
+}
+
+// ── Animated glow dots ────────────────────────────────────────────────────────
+
+interface GlowDot {
+  pitchX: number;
+  pitchY: number;
+  intensity: number;
+  phase: number;
+}
+
+function extractGlowDots(blurred: Float32Array, maxVal: number, topN = 28): GlowDot[] {
+  const threshold = maxVal * 0.20;
+  const candidates: { i: number; v: number }[] = [];
+  for (let i = 0; i < blurred.length; i++) {
+    if (blurred[i] >= threshold) candidates.push({ i, v: blurred[i] });
+  }
+  candidates.sort((a, b) => b.v - a.v);
+
+  const selected: GlowDot[] = [];
+  const minGap = 4.5;
+
+  for (const { i, v } of candidates) {
+    if (selected.length >= topN) break;
+    const cx = (i % GRID_COLS) + 0.5;
+    const cy = Math.floor(i / GRID_COLS) + 0.5;
+
+    let tooClose = false;
+    for (const s of selected) {
+      const dx = cx - (s.pitchX / PITCH_L) * GRID_COLS;
+      const dy = cy - (s.pitchY / PITCH_W) * GRID_ROWS;
+      if (dx * dx + dy * dy < minGap * minGap) { tooClose = true; break; }
+    }
+    if (tooClose) continue;
+
+    selected.push({
+      pitchX:    (cx / GRID_COLS) * PITCH_L,
+      pitchY:    (cy / GRID_ROWS) * PITCH_W,
+      intensity: v / maxVal,
+      phase:     Math.random() * Math.PI * 2,
+    });
+  }
+  return selected;
+}
+
+function drawGlowDots(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  dots: GlowDot[],
+  t: number,
+) {
+  const toPx = (x: number) => (x / PITCH_L) * W;
+  const toPy = (y: number) => (y / PITCH_W) * H;
+
+  for (const dot of dots) {
+    const cx = toPx(dot.pitchX);
+    const cy = toPy(dot.pitchY);
+    const pulse = 0.72 + 0.28 * (0.5 + 0.5 * Math.sin(t * 1.6 + dot.phase));
+    const baseR  = W * 0.019 * (0.45 + 0.8 * dot.intensity) * pulse;
+    const outerR = baseR * 2.4;
+    const rgb    = glowRgb(dot.intensity);
+    const alpha  = dot.intensity * 0.28 * pulse;
+
+    // Wide soft glow
+    const gOuter = ctx.createRadialGradient(cx, cy, 0, cx, cy, outerR);
+    gOuter.addColorStop(0,   `rgba(${rgb},${alpha.toFixed(3)})`);
+    gOuter.addColorStop(0.5, `rgba(${rgb},${(alpha * 0.5).toFixed(3)})`);
+    gOuter.addColorStop(1,   `rgba(${rgb},0)`);
+    ctx.fillStyle = gOuter;
+    ctx.beginPath(); ctx.arc(cx, cy, outerR, 0, Math.PI * 2); ctx.fill();
+
+    // Bright core
+    const gCore = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseR);
+    gCore.addColorStop(0,   `rgba(255,255,255,${(0.52 * pulse).toFixed(3)})`);
+    gCore.addColorStop(0.25, `rgba(${rgb},${(0.72 * pulse).toFixed(3)})`);
+    gCore.addColorStop(1,   `rgba(${rgb},0)`);
+    ctx.fillStyle = gCore;
+    ctx.beginPath(); ctx.arc(cx, cy, baseR, 0, Math.PI * 2); ctx.fill();
+  }
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function HeatmapPitch({ points }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef  = useRef<HTMLCanvasElement>(null);
+  const layerRef   = useRef<HeatLayer | null>(null);
+  const rafRef     = useRef<number>(0);
+  const startRef   = useRef<number>(performance.now());
 
+  // Recompute static layer whenever points change
+  useEffect(() => {
+    layerRef.current = buildHeatLayer(points);
+    startRef.current = performance.now();
+  }, [points]);
+
+  // Continuous animation loop (mounted once, reads layerRef via closure)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
     const W = canvas.width;
     const H = canvas.height;
 
-    ctx.clearRect(0, 0, W, H);
-    drawPitch(ctx, W, H);
-    drawHeatmap(ctx, W, H, points);
-  }, [points]);
+    const frame = () => {
+      const t = (performance.now() - startRef.current) / 1000;
+      ctx.clearRect(0, 0, W, H);
+      drawPitch(ctx, W, H);
+
+      const layer = layerRef.current;
+      if (layer) {
+        ctx.save();
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(layer.canvas, 0, 0, W, H);
+        ctx.restore();
+        drawGlowDots(ctx, W, H, layer.dots, t);
+      }
+
+      rafRef.current = requestAnimationFrame(frame);
+    };
+
+    rafRef.current = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, []);
 
   const hasData = points.length >= 3;
 
@@ -290,7 +377,6 @@ export default function HeatmapPitch({ points }: Props) {
           </div>
         )}
 
-        {/* Y-axis wing labels */}
         <div className="hm-y-labels">
           <span>Left</span>
           <span>Center</span>
@@ -298,7 +384,6 @@ export default function HeatmapPitch({ points }: Props) {
         </div>
       </div>
 
-      {/* X-axis zone labels */}
       <div className="hm-x-labels">
         <div className="hm-zone-block hm-zone-def">
           <span className="hm-zone-name">Defensive Third</span>
@@ -323,7 +408,6 @@ export default function HeatmapPitch({ points }: Props) {
           display: flex;
           flex-direction: column;
         }
-
         .hm-header {
           display: flex;
           justify-content: space-between;
@@ -340,31 +424,30 @@ export default function HeatmapPitch({ points }: Props) {
         }
         .hm-leg-label { font-size: 10px; }
         .hm-leg-bar {
-          width: 100px; height: 8px; border-radius: 4px;
+          width: 110px; height: 8px; border-radius: 4px;
           background: linear-gradient(90deg,
-            rgba(0,20,200,.45)   0%,
-            rgba(0,210,230,.70) 35%,
-            rgba(255,220,0,.85) 65%,
-            rgba(255,90,0,.90)  82%,
-            rgba(255,0,0,.93)  100%);
-          border: 1px solid rgba(255,255,255,.1);
+            rgba(20,110,255,.50)  0%,
+            rgba(0,210,170,.65)  28%,
+            rgba(255,210,0,.80)  58%,
+            rgba(255,80,0,.88)   78%,
+            rgba(255,0,0,.94)   100%);
+          border: 1px solid rgba(255,255,255,.08);
         }
 
         .hm-canvas-wrap {
           position: relative;
-          background: #0d1a0d;
+          background: #0d1f0e;
           padding: 10px 10px 0;
         }
         .hm-canvas {
           width: 100%; height: auto;
           display: block; border-radius: 4px;
         }
-
         .hm-empty {
           position: absolute; inset: 0;
           display: flex; align-items: center; justify-content: center;
           font-size: 13px; color: var(--text-muted);
-          background: rgba(13,26,13,.85);
+          background: rgba(13,31,14,.88);
         }
 
         .hm-y-labels {
@@ -372,13 +455,13 @@ export default function HeatmapPitch({ points }: Props) {
           right: 14px; top: 10px; bottom: 0;
           display: flex; flex-direction: column;
           justify-content: space-between;
-          padding: 4px 0 4px;
+          padding: 6px 0;
           pointer-events: none;
         }
         .hm-y-labels span {
           font-size: 9px; font-weight: 600;
           text-transform: uppercase; letter-spacing: .06em;
-          color: rgba(255,255,255,.22);
+          color: rgba(255,255,255,.20);
           writing-mode: vertical-rl;
           transform: rotate(180deg);
         }
@@ -386,7 +469,7 @@ export default function HeatmapPitch({ points }: Props) {
         .hm-x-labels {
           display: grid;
           grid-template-columns: 1fr 1fr 1fr;
-          background: #0d1a0d;
+          background: #0d1f0e;
           padding: 0 10px 8px;
         }
         .hm-zone-block {
@@ -394,17 +477,15 @@ export default function HeatmapPitch({ points }: Props) {
           gap: 2px; padding: 6px 4px 2px;
           border-top: 2px solid transparent;
         }
-        .hm-zone-def  { border-color: rgba(56,189,248,.45); }
-        .hm-zone-mid  { border-color: rgba(0,230,118,.45); }
-        .hm-zone-att  { border-color: rgba(251,191,36,.45); }
+        .hm-zone-def { border-color: rgba(56,189,248,.45); }
+        .hm-zone-mid { border-color: rgba(0,230,118,.45); }
+        .hm-zone-att { border-color: rgba(251,191,36,.45); }
         .hm-zone-name {
           font-size: 10px; font-weight: 700;
           text-transform: uppercase; letter-spacing: .07em;
-          color: rgba(255,255,255,.35);
+          color: rgba(255,255,255,.32);
         }
-        .hm-zone-range {
-          font-size: 9px; color: rgba(255,255,255,.18);
-        }
+        .hm-zone-range { font-size: 9px; color: rgba(255,255,255,.16); }
       `}</style>
     </div>
   );
