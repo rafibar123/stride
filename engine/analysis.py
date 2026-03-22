@@ -267,14 +267,19 @@ Pas {rating.get('passing', 0):.1f})"""
                 "items": {
                     "type": "object",
                     "properties": {
-                        "drill":    {"type": "string", "description": "Name of the training drill"},
-                        "duration": {"type": "string", "description": "e.g. '20 minutes'"},
-                        "focus":    {"type": "string", "description": "Short reason / what it improves"},
+                        "name":             {"type": "string",  "description": "Short drill name, e.g. '6 × 30 m sprint intervals'"},
+                        "duration_minutes": {"type": "integer", "description": "Duration in minutes, e.g. 15"},
+                        "goal":             {"type": "string",  "description": "One sentence: what physical/technical quality this targets"},
+                        "instructions":     {"type": "string",  "description": "2-3 sentences explaining exactly how to perform the drill"},
+                        "difficulty":       {"type": "string",  "enum": ["easy", "medium", "hard"]},
                     },
-                    "required": ["drill", "duration", "focus"],
+                    "required": ["name", "duration_minutes", "goal", "instructions", "difficulty"],
                     "additionalProperties": False,
                 },
-                "description": "Exactly 3 specific training recommendations tailored to this player's weaknesses",
+                "description": (
+                    "3 to 5 personalised training drills that directly address the weaknesses "
+                    "seen in the stats. Each must be actionable and specific."
+                ),
             },
         },
         "required": ["summary", "recommendations"],
@@ -284,7 +289,7 @@ Pas {rating.get('passing', 0):.1f})"""
     client = anthropic.Anthropic(timeout=25.0)  # never hang longer than 25s
     response = client.messages.create(
         model=_MODEL,
-        max_tokens=1200,
+        max_tokens=1800,
         system=(
             "You are a professional football performance analyst and personal coach. "
             "Write directly to the player ('You ran…', 'Your passing…'). "
@@ -297,7 +302,7 @@ Pas {rating.get('passing', 0):.1f})"""
             "content": (
                 f"Analyse this session:\n\n{stats_text}\n\n"
                 "Return this JSON (summary: exactly 3 strings, "
-                "recommendations: exactly 3 objects with drill/duration/focus)."
+                "recommendations: 3–5 personalised drills with name/duration_minutes/goal/instructions/difficulty)."
             ),
         }],
         output_config={
@@ -312,13 +317,20 @@ Pas {rating.get('passing', 0):.1f})"""
     data = json.loads(text)
 
     summary = data.get("summary", [])[:3]
-    recs    = data.get("recommendations", [])[:3]
+    recs    = data.get("recommendations", [])[:5]
 
+    _FALLBACK_DRILL = {
+        "name": "General fitness circuit",
+        "duration_minutes": 15,
+        "goal": "Maintain aerobic base and overall conditioning.",
+        "instructions": "Alternate 1 min jogging with 30 s of bodyweight exercises (squats, push-ups, lunges). Repeat 5 rounds.",
+        "difficulty": "medium",
+    }
     # Pad if the model returns fewer items (shouldn't happen but be defensive)
     while len(summary) < 3:
         summary.append("Analysis unavailable.")
     while len(recs) < 3:
-        recs.append({"drill": "General fitness", "duration": "15 minutes", "focus": "Overall conditioning"})
+        recs.append(_FALLBACK_DRILL)
 
     return summary, recs
 
@@ -423,52 +435,121 @@ def _rule_based(
     drills: List[Dict] = []
 
     if has_pass and pass_pct < 65:
-        drills.append({"drill": "Rondo passing drill (5v2)",
-                       "duration": "20 minutes",
-                       "focus": "Short passing accuracy and composure under pressure"})
+        drills.append({
+            "name": "Rondo passing drill (5v2)",
+            "duration_minutes": 20,
+            "goal": "Improve short passing accuracy and decision-making under pressure.",
+            "instructions": (
+                "Form a circle of 5 players with 2 defenders in the middle. "
+                "Keep the ball moving with one or two touches only. "
+                "When a defender wins the ball, the player who lost it swaps in."
+            ),
+            "difficulty": "medium",
+        })
     elif has_pass and pass_pct < 80:
-        drills.append({"drill": "Two-touch passing with wall",
-                       "duration": "15 minutes",
-                       "focus": "Clean ball distribution and quick thinking"})
+        drills.append({
+            "name": "Two-touch passing with wall",
+            "duration_minutes": 15,
+            "goal": "Sharpen first touch and clean one-two distribution.",
+            "instructions": (
+                "Stand 4 m from a wall. Pass firmly, control the rebound with one touch, "
+                "then pass again. Alternate feet every 2 minutes. "
+                "Progress to moving laterally between each rep."
+            ),
+            "difficulty": "easy",
+        })
 
     if sprint_count < 3:
-        drills.append({"drill": "10 × 30 m sprint intervals",
-                       "duration": "15 minutes",
-                       "focus": "Explosive acceleration and sprint capacity"})
+        drills.append({
+            "name": "6 × 30 m sprint intervals",
+            "duration_minutes": 15,
+            "goal": "Build explosive acceleration and sprint capacity.",
+            "instructions": (
+                "Mark out 30 m. Sprint at 100% effort, walk back as recovery. "
+                "Rest 90 s between sets. Focus on driving knees high and staying low in the first 10 m."
+            ),
+            "difficulty": "hard",
+        })
 
     if def_pct > 45 or att_pct < 20:
-        drills.append({"drill": "Shadow play — forward runs and overlaps",
-                       "duration": "20 minutes",
-                       "focus": "Reading the game and timing attacking movements"})
+        drills.append({
+            "name": "Forward-run shadow play",
+            "duration_minutes": 20,
+            "goal": "Develop timing of attacking runs and positioning in the final third.",
+            "instructions": (
+                "Without defenders, walk through team shape then trigger forward runs on coach's signal. "
+                "Practise overlap runs, diagonal cuts into the box, and late arrivals. "
+                "Repeat 8–10 times focusing on movement timing."
+            ),
+            "difficulty": "easy",
+        })
 
     if dist_per_min < 70:
-        drills.append({"drill": "5 km interval run (1 min fast / 1 min jog)",
-                       "duration": "25 minutes",
-                       "focus": "Aerobic base and match stamina"})
+        drills.append({
+            "name": "5 km tempo run (1 min fast / 1 min jog)",
+            "duration_minutes": 25,
+            "goal": "Raise aerobic base and match endurance.",
+            "instructions": (
+                "Alternate 1 min at 80% effort with 1 min of light jogging. "
+                "Complete 12 rounds. Track total distance and aim to improve each session."
+            ),
+            "difficulty": "medium",
+        })
 
     if max_kmh < 22:
-        drills.append({"drill": "Resistance band acceleration + flying 20 m sprints",
-                       "duration": "15 minutes",
-                       "focus": "Top-end speed development"})
+        drills.append({
+            "name": "Resistance band acceleration + flying 20 m sprints",
+            "duration_minutes": 15,
+            "goal": "Develop top-end speed and stride power.",
+            "instructions": (
+                "Attach resistance band around waist (partner holds). "
+                "Do 3 × 20 m resisted sprints, then immediately 3 × 20 m free sprints. "
+                "Rest 2 min between sets."
+            ),
+            "difficulty": "hard",
+        })
 
-    # Guarantee 3 entries with generic fillers
+    # Guarantee at least 3 entries with generic fillers
     generic = [
-        {"drill": "Small-sided 4v4 game",
-         "duration": "20 minutes",
-         "focus": "Match intensity, decision-making and pressing"},
-        {"drill": "Ball control juggling + first touch",
-         "duration": "15 minutes",
-         "focus": "Technical ability on the ball"},
-        {"drill": "Cool-down stretch + foam roll",
-         "duration": "10 minutes",
-         "focus": "Recovery, mobility and injury prevention"},
+        {
+            "name": "Small-sided 4v4 game",
+            "duration_minutes": 20,
+            "goal": "Simulate match intensity and sharpen pressing and decision-making.",
+            "instructions": (
+                "Play 4v4 on a 30 × 20 m pitch with small goals. "
+                "Press immediately on losing the ball. "
+                "Rotate players every 4 minutes."
+            ),
+            "difficulty": "medium",
+        },
+        {
+            "name": "Ball juggling + first-touch control",
+            "duration_minutes": 15,
+            "goal": "Improve touch quality and ball confidence.",
+            "instructions": (
+                "Juggle for 1 min, then catch and throw high — control the drop with one touch. "
+                "Progress to volleying against a wall. "
+                "Aim for zero dead touches."
+            ),
+            "difficulty": "easy",
+        },
+        {
+            "name": "Cool-down stretch + foam roll",
+            "duration_minutes": 10,
+            "goal": "Speed up recovery and maintain mobility.",
+            "instructions": (
+                "5 min of light jogging, then foam roll quads, hamstrings and calves (30 s each). "
+                "Finish with hip-flexor and groin static stretches held 30 s."
+            ),
+            "difficulty": "easy",
+        },
     ]
     for g in generic:
-        if len(drills) >= 3:
+        if len(drills) >= 5:
             break
         drills.append(g)
 
-    return summary, drills[:3]
+    return summary, drills[:5]
 
 
 # ── Coach / team analysis ─────────────────────────────────────────────────────
@@ -591,14 +672,19 @@ Per-player breakdown:
                 "items": {
                     "type": "object",
                     "properties": {
-                        "drill":    {"type": "string"},
-                        "duration": {"type": "string"},
-                        "focus":    {"type": "string"},
+                        "name":             {"type": "string",  "description": "Short team drill name"},
+                        "duration_minutes": {"type": "integer", "description": "Duration in minutes"},
+                        "goal":             {"type": "string",  "description": "One sentence: which team weakness this targets"},
+                        "instructions":     {"type": "string",  "description": "2-3 sentences on how to run the drill with a full squad"},
+                        "difficulty":       {"type": "string",  "enum": ["easy", "medium", "hard"]},
                     },
-                    "required": ["drill", "duration", "focus"],
+                    "required": ["name", "duration_minutes", "goal", "instructions", "difficulty"],
                     "additionalProperties": False,
                 },
-                "description": "Exactly 3 team training drills that address the identified weaknesses",
+                "description": (
+                    "3 to 5 team training drills that directly address the squad weaknesses "
+                    "identified in the stats. Each must be runnable on a full training pitch."
+                ),
             },
         },
         "required": ["summary", "recommendations"],
@@ -608,7 +694,7 @@ Per-player breakdown:
     client = anthropic.Anthropic(timeout=25.0)
     response = client.messages.create(
         model=_MODEL,
-        max_tokens=1200,
+        max_tokens=1800,
         system=(
             "You are a professional football head coach and performance analyst. "
             "Write to the coach ('Your team…', 'The squad…'). "
@@ -621,7 +707,7 @@ Per-player breakdown:
             "content": (
                 f"Analyse this team session:\n\n{stats_text}\n\n"
                 "Return this JSON (summary: exactly 3 strings, "
-                "recommendations: exactly 3 objects with drill/duration/focus)."
+                "recommendations: 3–5 team drills with name/duration_minutes/goal/instructions/difficulty)."
             ),
         }],
         output_config={
@@ -636,12 +722,23 @@ Per-player breakdown:
     data = json.loads(text)
 
     summary = data.get("summary", [])[:3]
-    recs    = data.get("recommendations", [])[:3]
+    recs    = data.get("recommendations", [])[:5]
 
+    _FALLBACK_TEAM_DRILL = {
+        "name": "Team fitness circuit",
+        "duration_minutes": 20,
+        "goal": "Maintain squad conditioning and group cohesion.",
+        "instructions": (
+            "Divide the squad into groups of 4. "
+            "Each group cycles through: shuttle runs, passing squares, and defensive slide drills. "
+            "Rotate every 5 minutes."
+        ),
+        "difficulty": "medium",
+    }
     while len(summary) < 3:
         summary.append("Team analysis unavailable.")
     while len(recs) < 3:
-        recs.append({"drill": "Team fitness circuit", "duration": "20 minutes", "focus": "Overall conditioning"})
+        recs.append(_FALLBACK_TEAM_DRILL)
 
     return summary, recs
 
@@ -718,34 +815,85 @@ def _rule_based_coach(
     # Drills
     drills: List[Dict] = []
     if team_pass_pct < 70 and team_pass_pct > 0:
-        drills.append({"drill": "Positional rondo (8v4)", "duration": "20 minutes",
-                       "focus": "Team passing accuracy and pressing triggers"})
+        drills.append({
+            "name": "Positional rondo (8v4)",
+            "duration_minutes": 20,
+            "goal": "Raise team passing accuracy and sharpen collective pressing triggers.",
+            "instructions": (
+                "8 outfield players keep possession inside a 20 × 20 m grid against 4 defenders. "
+                "Limit to two touches. When defenders win the ball the last two players who lost it swap in. "
+                "Coach calls 'press' to trigger coordinated pressing from defenders."
+            ),
+            "difficulty": "medium",
+        })
     if avg_att_pct < 30:
-        drills.append({"drill": "Transition attack drill (3v2 into full goal)",
-                       "duration": "20 minutes",
-                       "focus": "Speed of transition and forward movement"})
+        drills.append({
+            "name": "Transition attack (3v2 into full goal)",
+            "duration_minutes": 20,
+            "goal": "Speed up transitions from defence to attack and increase time in the final third.",
+            "instructions": (
+                "Start with 3 attackers vs 2 defenders from the halfway line. "
+                "Attackers must finish within 8 seconds. "
+                "On every turnover, 2 new defenders sprint out while attackers reset. "
+                "Run 12 reps, tracking shot conversion."
+            ),
+            "difficulty": "hard",
+        })
     if total_sprints / max(n_players, 1) < 3:
-        drills.append({"drill": "High-intensity interval runs (6 × 60 m)",
-                       "duration": "15 minutes",
-                       "focus": "Sprint capacity and explosive acceleration"})
+        drills.append({
+            "name": "Team sprint ladder (6 × 60 m)",
+            "duration_minutes": 15,
+            "goal": "Lift collective sprint capacity and explosive acceleration across the squad.",
+            "instructions": (
+                "Line the full squad on the goal line. "
+                "Sprint 60 m on whistle, jog back as recovery (90 s). "
+                "Complete 6 rounds. Track last-place finisher each set — "
+                "team must beat their previous best on the final rep."
+            ),
+            "difficulty": "hard",
+        })
 
     generic = [
-        {"drill": "11v11 shape work — structured possession",
-         "duration": "25 minutes",
-         "focus": "Defensive shape and compactness"},
-        {"drill": "Finishing drill from crosses",
-         "duration": "20 minutes",
-         "focus": "Attacking threat and shot conversion"},
-        {"drill": "Set piece preparation",
-         "duration": "15 minutes",
-         "focus": "Corners, free kicks — scored and conceded"},
+        {
+            "name": "11v11 structured possession shape",
+            "duration_minutes": 25,
+            "goal": "Reinforce defensive compactness and controlled build-up under pressure.",
+            "instructions": (
+                "Set up in your match formation. Possession team tries to move through all thirds. "
+                "Defending team holds their shape; coach pauses play to correct positioning. "
+                "Alternate possession every 5 minutes."
+            ),
+            "difficulty": "medium",
+        },
+        {
+            "name": "Cross and finish from wide areas",
+            "duration_minutes": 20,
+            "goal": "Increase shot volume and attacking threat from wide positions.",
+            "instructions": (
+                "Wingers serve crosses from the byline and cut-back position alternately. "
+                "2 strikers and 1 late midfielder arrive into the box on each cross. "
+                "Rotate crossers every 3 minutes. Target: 70% of crosses converted to shots."
+            ),
+            "difficulty": "medium",
+        },
+        {
+            "name": "Set-piece preparation block",
+            "duration_minutes": 15,
+            "goal": "Convert more attacking corners and free-kicks while defending set-pieces better.",
+            "instructions": (
+                "Split into attacking and defending groups. "
+                "Work through 3 attacking corner routines and 2 near-post free-kick routines. "
+                "Each routine repeated 4 times. Swap groups and repeat."
+            ),
+            "difficulty": "easy",
+        },
     ]
     for g in generic:
-        if len(drills) >= 3:
+        if len(drills) >= 5:
             break
         drills.append(g)
 
-    return summary, drills[:3]
+    return summary, drills[:5]
 
 
 # ── Player style archetype ────────────────────────────────────────────────────
