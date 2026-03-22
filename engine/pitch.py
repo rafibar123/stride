@@ -358,6 +358,57 @@ class WorldMetrics:
             "sprint_count": int(sprint_count),
         }
 
+    def compute_ball_proximity(
+        self,
+        target_points: List[Dict],
+        ball_history: List[Dict],
+        fps: float,
+        frame_skip: int,
+        meters_per_pixel: float = DEFAULT_METERS_PER_PIXEL,
+        proximity_m: float = 1.0,
+    ) -> Dict:
+        """
+        Count frames where the target player was within *proximity_m* metres
+        of the ball.  Returns seconds, percentage of tracked time, and a
+        formatted "M:SS" string.
+
+        Uses homography pitch coordinates when available on both the player
+        and the ball; falls back to pixel × mpp otherwise.
+        """
+        ball_by_frame: Dict[int, Dict] = {b["frame"]: b for b in ball_history}
+        if not ball_by_frame or not target_points:
+            return {"ball_time_s": 0.0, "ball_time_pct": 0.0, "ball_time_str": "0:00"}
+
+        proximity_frames = 0
+        for pt in target_points:
+            ball = ball_by_frame.get(pt["frame"])
+            if ball is None:
+                continue
+
+            if (pt.get("_homography") and "pitch_x" in pt and "pitch_x" in ball):
+                dx = pt["pitch_x"] - ball["pitch_x"]
+                dy = pt["pitch_y"] - ball["pitch_y"]
+            else:
+                dx = (pt["x"] - ball["x"]) * meters_per_pixel
+                dy = (pt["y"] - ball["y"]) * meters_per_pixel
+
+            if dx * dx + dy * dy <= proximity_m * proximity_m:
+                proximity_frames += 1
+
+        total_frames = max(len(target_points), 1)
+        # Each decoded frame represents frame_skip real video frames
+        prox_s = proximity_frames * frame_skip / max(fps, 1)
+        total_s = total_frames * frame_skip / max(fps, 1)
+        pct = (proximity_frames / total_frames) * 100
+
+        mins = int(prox_s // 60)
+        secs = int(prox_s % 60)
+        return {
+            "ball_time_s":   round(prox_s, 1),
+            "ball_time_pct": round(pct, 1),
+            "ball_time_str": f"{mins}:{secs:02d}",
+        }
+
     def heatmap_pitch_points(self, tracks: List[Dict]) -> List[List[float]]:
         out = []
         for tr in tracks:

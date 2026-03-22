@@ -12,6 +12,9 @@ export interface PlayerStats {
   sprint_count: number;
   zone_frames: ZoneFrames;
   total_frames: number;
+  ball_time_s?: number;
+  ball_time_pct?: number;
+  ball_time_str?: string;
 }
 
 export interface PitchMeta {

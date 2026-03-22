@@ -1,10 +1,15 @@
-import { Activity, Zap, Wind, TrendingUp } from 'lucide-react';
+import { Activity, Zap, Wind, TrendingUp, Circle } from 'lucide-react';
 import type { PlayerStats as Stats } from '../types';
 
 interface Props { stats: Stats; fps: number; }
 
 export default function PlayerStats({ stats, fps }: Props) {
-  const { zone_frames, distance_m, avg_speed_mps, max_speed_mps, sprint_count, total_frames } = stats;
+  const {
+    zone_frames, distance_m, avg_speed_mps, max_speed_mps,
+    sprint_count, total_frames,
+    ball_time_s, ball_time_pct, ball_time_str,
+  } = stats;
+
   const dur_s = total_frames / Math.max(fps, 1);
   const dur_str = dur_s >= 60
     ? `${Math.floor(dur_s / 60)}m ${Math.round(dur_s % 60)}s`
@@ -13,6 +18,8 @@ export default function PlayerStats({ stats, fps }: Props) {
   const distKm = distance_m >= 1000;
   const distVal = distKm ? (distance_m / 1000).toFixed(2) : distance_m.toFixed(0);
   const distUnit = distKm ? 'km' : 'm';
+
+  const hasBallTime = ball_time_s != null && ball_time_s > 0;
 
   const cards = [
     {
@@ -72,6 +79,29 @@ export default function PlayerStats({ stats, fps }: Props) {
           </div>
         ))}
       </div>
+
+      {hasBallTime && (
+        <div className="ball-time-card">
+          <div className="bt-left">
+            <div className="bt-icon">
+              <Circle size={18} strokeWidth={2.5} />
+            </div>
+            <div className="bt-text">
+              <span className="bt-label">Time With Ball</span>
+              <span className="bt-sub">within 1 m of ball</span>
+            </div>
+          </div>
+          <div className="bt-right">
+            <span className="bt-time">{ball_time_str}</span>
+            <div className="bt-pct-wrap">
+              <div className="bt-bar-track">
+                <div className="bt-bar-fill" style={{ width: `${Math.min(ball_time_pct ?? 0, 100)}%` }} />
+              </div>
+              <span className="bt-pct">{(ball_time_pct ?? 0).toFixed(1)}%</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="zone-card">
         <div className="zone-card-header">
@@ -145,6 +175,46 @@ export default function PlayerStats({ stats, fps }: Props) {
         .sc-val  { font-size: 30px; font-weight: 800; color: var(--text); line-height: 1; font-variant-numeric: tabular-nums; }
         .sc-unit { font-size: 14px; color: var(--text-muted); font-weight: 500; }
         .sc-sub  { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+        .ball-time-card {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          padding: 16px 20px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+        }
+        .bt-left  { display: flex; align-items: center; gap: 12px; }
+        .bt-icon  {
+          width: 36px; height: 36px; border-radius: var(--radius-sm);
+          background: var(--green-dim); color: var(--green);
+          display: flex; align-items: center; justify-content: center;
+          flex-shrink: 0;
+        }
+        .bt-text  { display: flex; flex-direction: column; gap: 2px; }
+        .bt-label { font-size: 12px; font-weight: 700; color: var(--text); }
+        .bt-sub   { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+
+        .bt-right { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+        .bt-time  {
+          font-size: 28px; font-weight: 800; color: var(--text);
+          font-variant-numeric: tabular-nums; white-space: nowrap;
+        }
+        .bt-pct-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+        .bt-bar-track {
+          width: 90px; height: 5px; border-radius: 3px;
+          background: var(--surface-3);
+          overflow: hidden;
+        }
+        .bt-bar-fill {
+          height: 100%; border-radius: 3px;
+          background: var(--green);
+          box-shadow: 0 0 6px var(--green-glow);
+          transition: width .6s ease;
+        }
+        .bt-pct { font-size: 11px; font-weight: 700; color: var(--green); }
 
         .zone-card {
           background: var(--surface);

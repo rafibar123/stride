@@ -193,12 +193,16 @@ class EventEngine:
 
         if ball is not None:
             ball_center = tuple(ball["center"])
-            self.ball_history.append({
+            entry: Dict = {
                 "frame": frame_idx,
                 "x": round(ball_center[0], 2),
                 "y": round(ball_center[1], 2),
                 "conf": round(float(ball["conf"]), 4),
-            })
+            }
+            if "pitch_x" in ball:
+                entry["pitch_x"] = ball["pitch_x"]
+                entry["pitch_y"] = ball["pitch_y"]
+            self.ball_history.append(entry)
 
         nearest = self._nearest_player(ball_center, active_tracks)
 

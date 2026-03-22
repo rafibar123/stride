@@ -412,6 +412,23 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
     possession_by_team = event_engine.export_possession_by_team()
     possession_by_player = event_engine.export_possession_by_player()
 
+    # ── Ball proximity ("time with ball") ──────────────────────────────────────
+    if target_track_id is not None and per_player_metrics:
+        try:
+            target_points = [t for t in tracks if t["track_id"] == target_track_id]
+            ball_prox = world_metrics.compute_ball_proximity(
+                target_points=target_points,
+                ball_history=ball_track,
+                fps=fps,
+                frame_skip=config.frame_skip,
+                meters_per_pixel=config.meters_per_pixel,
+            )
+            per_player_metrics[0].update(ball_prox)
+            log.info("[%s] ball proximity  %.1fs  %.1f%%", run_id,
+                     ball_prox["ball_time_s"], ball_prox["ball_time_pct"])
+        except Exception as exc:
+            log.warning("[%s] ball proximity failed: %s", run_id, exc)
+
     # ── Pass detection ─────────────────────────────────────────────────────────
     pass_stats: Dict = {}
     if target_track_id is not None and ball_track:
