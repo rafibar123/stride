@@ -471,6 +471,283 @@ def _rule_based(
     return summary, drills[:3]
 
 
+# ── Coach / team analysis ─────────────────────────────────────────────────────
+
+def generate_coach_analysis(result_dict: Dict) -> Dict:
+    """
+    Build a team-level analysis dict for the coach view.
+
+    Returns:
+    {
+        "team_stats":      [{player_id, distance_m, top_speed_kmh, sprints, passes, pass_pct, zone_att_pct}, ...],
+        "summary":         [str, str, str],
+        "recommendations": [{drill, duration, focus}, ...],
+        "ai_generated":    bool,
+    }
+    """
+    per_player  = result_dict.get("per_player_metrics", []) or []
+    pass_stats  = result_dict.get("pass_stats",  {}) or {}
+    event_metrics = result_dict.get("event_metrics", {}) or {}
+    fps         = float(result_dict.get("fps", 25.0))
+
+    # ── Build per-player summary rows ─────────────────────────────────────────
+    team_stats = []
+    for idx, p in enumerate(per_player):
+        zone_frames = p.get("zone_frames", {})
+        za = zone_frames.get("attacking_third", 0)
+        zt = max(sum(zone_frames.values()), 1)
+        ps = (p.get("pass_stats") or {}) if isinstance(p.get("pass_stats"), dict) else {}
+        # fallback: team pass_stats split equally if per-player not available
+        p_passes   = int(ps.get("total",    pass_stats.get("total",    0)))
+        p_accurate = int(ps.get("accurate", 0))
+        p_pct      = float(ps.get("accuracy_pct", pass_stats.get("accuracy_pct", 0.0)))
+        team_stats.append({
+            "player_id":    p.get("player_id", idx),
+            "distance_m":   float(p.get("distance_m",    0.0)),
+            "top_speed_kmh": float(p.get("max_speed_mps", 0.0)) * 3.6,
+            "sprints":       int(p.get("sprint_count",   0)),
+            "passes":        p_passes,
+            "pass_accuracy_pct": p_pct,
+            "zone_att_pct":  round(za / zt * 100, 1),
+        })
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if api_key:
+        try:
+            summary, recs = _call_claude_coach(team_stats, pass_stats, event_metrics, fps)
+            return {
+                "team_stats":      team_stats,
+                "summary":         summary,
+                "recommendations": recs,
+                "ai_generated":    True,
+            }
+        except Exception as exc:
+            log.warning("Claude coach API call failed — using rule-based fallback: %s", exc)
+
+    summary, recs = _rule_based_coach(team_stats, pass_stats, event_metrics)
+    return {
+        "team_stats":      team_stats,
+        "summary":         summary,
+        "recommendations": recs,
+        "ai_generated":    False,
+    }
+
+
+def _call_claude_coach(
+    team_stats: List[Dict],
+    pass_stats: Dict,
+    event_metrics: Dict,
+    fps: float,
+) -> Tuple[List[str], List[Dict]]:
+    import anthropic
+
+    if not team_stats:
+        raise ValueError("No player data")
+
+    n_players   = len(team_stats)
+    top_runner  = max(team_stats, key=lambda p: p["distance_m"])
+    top_speed_p = max(team_stats, key=lambda p: p["top_speed_kmh"])
+    total_dist  = sum(p["distance_m"] for p in team_stats)
+    avg_att_pct = sum(p["zone_att_pct"] for p in team_stats) / n_players
+    total_sprints = sum(p["sprints"] for p in team_stats)
+    total_shots = int(event_metrics.get("shot_count", 0))
+    total_passes = int(pass_stats.get("total", 0))
+    team_pass_pct = float(pass_stats.get("accuracy_pct", 0.0))
+
+    rows = "\n".join(
+        f"  P{p['player_id']}: dist={p['distance_m']:.0f}m  "
+        f"top={p['top_speed_kmh']:.1f}km/h  sprints={p['sprints']}  "
+        f"att_zone={p['zone_att_pct']:.0f}%"
+        for p in team_stats
+    )
+
+    stats_text = f"""Players tracked: {n_players}
+Total team distance: {total_dist / 1000:.2f} km
+Team pass accuracy: {team_pass_pct:.0f}%  ({total_passes} passes total)
+Total sprints across team: {total_sprints}
+Total shots: {total_shots}
+Avg time in attacking third: {avg_att_pct:.0f}%
+Top runner: Player {top_runner['player_id']} ({top_runner['distance_m']:.0f} m)
+Fastest player: Player {top_speed_p['player_id']} ({top_speed_p['top_speed_kmh']:.1f} km/h)
+
+Per-player breakdown:
+{rows}"""
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Exactly 3 sentences — coach perspective: "
+                    "[1] overall team work-rate and distance, "
+                    "[2] attacking threat / best individual contributor, "
+                    "[3] main tactical weakness to address in training"
+                ),
+            },
+            "recommendations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "drill":    {"type": "string"},
+                        "duration": {"type": "string"},
+                        "focus":    {"type": "string"},
+                    },
+                    "required": ["drill", "duration", "focus"],
+                    "additionalProperties": False,
+                },
+                "description": "Exactly 3 team training drills that address the identified weaknesses",
+            },
+        },
+        "required": ["summary", "recommendations"],
+        "additionalProperties": False,
+    }
+
+    client = anthropic.Anthropic(timeout=25.0)
+    response = client.messages.create(
+        model=_MODEL,
+        max_tokens=1200,
+        system=(
+            "You are a professional football head coach and performance analyst. "
+            "Write to the coach ('Your team…', 'The squad…'). "
+            "Be specific — reference the real numbers given. "
+            "Be constructive and tactical. Keep each sentence to 1-2 lines. "
+            "Respond with valid JSON only — no prose, no markdown fences."
+        ),
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Analyse this team session:\n\n{stats_text}\n\n"
+                "Return this JSON (summary: exactly 3 strings, "
+                "recommendations: exactly 3 objects with drill/duration/focus)."
+            ),
+        }],
+        output_config={
+            "format": {
+                "type": "json_schema",
+                "schema": schema,
+            }
+        },
+    )
+
+    text = next(b.text for b in response.content if b.type == "text")
+    data = json.loads(text)
+
+    summary = data.get("summary", [])[:3]
+    recs    = data.get("recommendations", [])[:3]
+
+    while len(summary) < 3:
+        summary.append("Team analysis unavailable.")
+    while len(recs) < 3:
+        recs.append({"drill": "Team fitness circuit", "duration": "20 minutes", "focus": "Overall conditioning"})
+
+    return summary, recs
+
+
+def _rule_based_coach(
+    team_stats: List[Dict],
+    pass_stats: Dict,
+    event_metrics: Dict,
+) -> Tuple[List[str], List[Dict]]:
+    if not team_stats:
+        return (
+            ["No player data available.", "—", "—"],
+            [{"drill": "Team fitness circuit", "duration": "20 minutes", "focus": "Conditioning"}],
+        )
+
+    n_players   = len(team_stats)
+    total_dist  = sum(p["distance_m"] for p in team_stats)
+    avg_dist    = total_dist / n_players
+    top_runner  = max(team_stats, key=lambda p: p["distance_m"])
+    avg_att_pct = sum(p["zone_att_pct"] for p in team_stats) / n_players
+    total_sprints = sum(p["sprints"] for p in team_stats)
+    team_pass_pct = float(pass_stats.get("accuracy_pct", 0.0))
+    total_shots = int(event_metrics.get("shot_count", 0))
+
+    # Sentence 1: overall work rate
+    s1 = (
+        f"The squad covered a combined {total_dist / 1000:.2f} km — "
+        f"an average of {avg_dist / 1000:.2f} km per tracked player, "
+        f"with {total_sprints} sprint bursts across the team."
+    )
+
+    # Sentence 2: best contributor / attacking presence
+    if top_runner["distance_m"] > avg_dist * 1.3:
+        s2 = (
+            f"Player {top_runner['player_id']} led the team with "
+            f"{top_runner['distance_m']:.0f} m covered — a standout engine in midfield."
+        )
+    elif avg_att_pct >= 35:
+        s2 = (
+            f"The team showed good attacking intent, spending an average of "
+            f"{avg_att_pct:.0f}% of time in the opposition's third. "
+            f"Total shots recorded: {total_shots}."
+        )
+    else:
+        s2 = (
+            f"With {total_shots} shots and {avg_att_pct:.0f}% average time in the "
+            f"attacking third, there is room to push higher up the pitch."
+        )
+
+    # Sentence 3: main weakness
+    weaknesses = []
+    if team_pass_pct < 65 and team_pass_pct > 0:
+        weaknesses.append(
+            f"Team passing accuracy was {team_pass_pct:.0f}% — "
+            "work on quick combination play under pressure in training."
+        )
+    if avg_att_pct < 25:
+        weaknesses.append(
+            "The team spent too little time in the final third; "
+            "focus on faster transitions and forward runs from midfield."
+        )
+    if total_sprints / max(n_players, 1) < 2:
+        weaknesses.append(
+            "Sprint output per player was low — "
+            "add high-intensity intervals to sharpen explosive movement."
+        )
+    s3 = weaknesses[0] if weaknesses else (
+        "Focus on maintaining this intensity over a full 90 minutes — "
+        "late-game endurance and pressing triggers are the next priorities."
+    )
+
+    summary = [s1, s2, s3]
+
+    # Drills
+    drills: List[Dict] = []
+    if team_pass_pct < 70 and team_pass_pct > 0:
+        drills.append({"drill": "Positional rondo (8v4)", "duration": "20 minutes",
+                       "focus": "Team passing accuracy and pressing triggers"})
+    if avg_att_pct < 30:
+        drills.append({"drill": "Transition attack drill (3v2 into full goal)",
+                       "duration": "20 minutes",
+                       "focus": "Speed of transition and forward movement"})
+    if total_sprints / max(n_players, 1) < 3:
+        drills.append({"drill": "High-intensity interval runs (6 × 60 m)",
+                       "duration": "15 minutes",
+                       "focus": "Sprint capacity and explosive acceleration"})
+
+    generic = [
+        {"drill": "11v11 shape work — structured possession",
+         "duration": "25 minutes",
+         "focus": "Defensive shape and compactness"},
+        {"drill": "Finishing drill from crosses",
+         "duration": "20 minutes",
+         "focus": "Attacking threat and shot conversion"},
+        {"drill": "Set piece preparation",
+         "duration": "15 minutes",
+         "focus": "Corners, free kicks — scored and conceded"},
+    ]
+    for g in generic:
+        if len(drills) >= 3:
+            break
+        drills.append(g)
+
+    return summary, drills[:3]
+
+
 # ── Player style archetype ────────────────────────────────────────────────────
 
 def _compute_player_style(

@@ -39,7 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse
 try:
     from engine.pipeline import PipelineConfig, run_pipeline
     from engine.report import generate_pdf
-    from engine.analysis import generate_match_analysis
+    from engine.analysis import generate_match_analysis, generate_coach_analysis
     _ENGINE_OK = True
 except Exception as _engine_err:
     _ENGINE_OK = False
@@ -188,7 +188,8 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
                         click_x: Optional[float] = None,
                         click_y: Optional[float] = None,
                         jersey_color: Optional[str] = None,
-                        player_info: Optional[dict] = None) -> None:
+                        player_info: Optional[dict] = None,
+                        user_type: str = "player") -> None:
     t0 = time.time()
     try:
         def on_progress(pct: float, stage: str) -> None:
@@ -238,27 +239,34 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
         if player_info:
             result_dict["player_info"] = player_info
 
-        # ── AI match analysis (60-second cap) ─────────────────────────────
+        # ── AI match / team analysis (60-second cap) ──────────────────────
         with _jobs_lock:
             _jobs[job_id] = {"pct": 95, "stage": "ai_analysis"}
 
         try:
-            match_analysis = await asyncio.wait_for(
-                loop.run_in_executor(None, generate_match_analysis, result_dict),
+            if user_type == "coach":
+                analysis_fn = partial(generate_coach_analysis, result_dict)
+                analysis_key = "team_analysis"
+            else:
+                analysis_fn = partial(generate_match_analysis, result_dict)
+                analysis_key = "match_analysis"
+
+            analysis_result = await asyncio.wait_for(
+                loop.run_in_executor(None, analysis_fn),
                 timeout=60.0,
             )
-            result_dict["match_analysis"] = match_analysis
+            result_dict[analysis_key] = analysis_result
             log.info(
-                "[%s] match analysis done  ai=%s  pos=%d  neg=%d",
+                "[%s] %s done  ai=%s  user_type=%s",
                 job_id[:8],
-                match_analysis.get("ai_generated"),
-                match_analysis.get("actions", {}).get("positive_count", 0),
-                match_analysis.get("actions", {}).get("negative_count", 0),
+                analysis_key,
+                analysis_result.get("ai_generated"),
+                user_type,
             )
         except asyncio.TimeoutError:
             log.warning("[%s] AI analysis timed out after 60s — skipping", job_id[:8])
         except Exception as exc:
-            log.warning("[%s] match analysis failed: %s", job_id[:8], exc)
+            log.warning("[%s] analysis failed: %s", job_id[:8], exc)
 
         with _jobs_lock:
             _jobs[job_id] = {"pct": 100, "stage": "done", "result": result_dict}
@@ -354,6 +362,7 @@ async def analyze(
     player_name: Optional[str] = Form(None),
     player_number: Optional[str] = Form(None),
     team_name: Optional[str] = Form(None),
+    user_type: str = Form("player"),
 ):
     """
     Start analysis for a previously uploaded preview.
@@ -384,13 +393,16 @@ async def analyze(
     with _jobs_lock:
         _jobs[job_id] = {"pct": 0, "stage": "starting"}
 
-    log.info("[%s] analyze  preview=%s  frame_skip=%d  click=(%.3f, %.3f)  jersey=%s  player=%s",
+    if user_type not in ("player", "coach"):
+        user_type = "player"
+
+    log.info("[%s] analyze  preview=%s  frame_skip=%d  click=(%.3f, %.3f)  jersey=%s  player=%s  user_type=%s",
              job_id[:8], preview_id[:8], frame_skip, click_x, click_y,
-             jersey_color, player_name)
+             jersey_color, player_name, user_type)
 
     background_tasks.add_task(
         _run_analysis, job_id, video_path, frame_skip,
-        click_x, click_y, jersey_color, player_info,
+        click_x, click_y, jersey_color, player_info, user_type,
     )
 
     return JSONResponse(content={"job_id": job_id})
@@ -409,19 +421,25 @@ def get_progress(job_id: str):
 class ReanalyzeRequest(BaseModel):
     result: dict
     manual_stats: dict
+    user_type: str = "player"
 
 
 @app.post("/reanalyze")
 async def reanalyze(body: ReanalyzeRequest):
     """
-    Re-run match analysis with combined AI-detected + player-reported stats.
-    Returns an updated match_analysis dict.
+    Re-run match / team analysis with combined AI-detected + player-reported stats.
+    Returns an updated match_analysis (player) or team_analysis (coach) dict.
     """
     loop = asyncio.get_event_loop()
-    match_analysis = await loop.run_in_executor(
-        None, generate_match_analysis, body.result, body.manual_stats
-    )
-    return match_analysis
+    if body.user_type == "coach":
+        result = await loop.run_in_executor(
+            None, generate_coach_analysis, body.result
+        )
+    else:
+        result = await loop.run_in_executor(
+            None, generate_match_analysis, body.result, body.manual_stats
+        )
+    return result
 
 
 @app.post("/report")
