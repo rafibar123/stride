@@ -412,7 +412,7 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
         log.info("[%s] fallback mpp=%.4f m/px (no calibration)", run_id, mpp)
 
     motion_metrics = world_metrics.compute_track_metrics(tracks, fps, mpp)
-    per_player_metrics = world_metrics.compute_per_player_metrics(tracks, fps, mpp)
+    per_player_metrics = world_metrics.compute_per_player_metrics(tracks, fps, mpp, frame_skip=frame_skip)
     # Filter to only the selected player when a click target was provided
     if target_track_id is not None:
         per_player_metrics = [p for p in per_player_metrics if p["track_id"] == target_track_id]

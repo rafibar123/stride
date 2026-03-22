@@ -470,7 +470,8 @@ class WorldMetrics:
         return out
 
     def compute_per_player_metrics(self, tracks: List[Dict], fps: float,
-                                   meters_per_pixel: float = DEFAULT_METERS_PER_PIXEL) -> List[Dict]:
+                                   meters_per_pixel: float = DEFAULT_METERS_PER_PIXEL,
+                                   frame_skip: int = 1) -> List[Dict]:
         """
         Returns per-player stats: distance_m, avg_speed_mps, max_speed_mps,
         sprint_count, zone_frames.
@@ -563,7 +564,8 @@ class WorldMetrics:
                 "max_speed_kmh": round(max_spd * 3.6, 1),
                 "sprint_count": sprint_count,
                 "zone_frames": zone_frames,
-                "total_frames": len(points),
+                # Multiply by frame_skip so that total_frames / fps = real tracked seconds.
+                "total_frames": len(points) * max(1, frame_skip),
             })
 
         results.sort(key=lambda p: p["distance_m"], reverse=True)
