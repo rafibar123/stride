@@ -210,6 +210,27 @@ class PitchCalibrator:
     def is_ready(self) -> bool:
         return self.h_matrix is not None
 
+    def calibrated_meters_per_pixel(self, frame_width: int, frame_height: int) -> float:
+        """
+        Derive the real pixel→metre scale from the homography at mid-pitch.
+        Transforms two horizontally-adjacent pixels and measures their
+        real-world separation.  Falls back to DEFAULT_METERS_PER_PIXEL when
+        the homography is not available or produces an implausible result.
+        """
+        if self.h_matrix is None:
+            return DEFAULT_METERS_PER_PIXEL
+        cx, cy = frame_width / 2.0, frame_height / 2.0
+        p0 = self.pixel_to_pitch(cx, cy)
+        p1 = self.pixel_to_pitch(cx + 1.0, cy)
+        if p0 is None or p1 is None:
+            return DEFAULT_METERS_PER_PIXEL
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        mpp = math.sqrt(dx * dx + dy * dy)
+        # Sanity: valid range for football-pitch cameras is roughly 0.01–0.5 m/px
+        if 0.01 <= mpp <= 0.5:
+            return mpp
+        return DEFAULT_METERS_PER_PIXEL
+
     def pixel_to_pitch(self, x: float, y: float) -> Optional[Tuple[float, float]]:
         if self.h_matrix is None:
             return None
@@ -326,10 +347,13 @@ class WorldMetrics:
 
         total_distance = 0.0
         max_speed = 0.0
-        sprint_count = 0
+        sprint_count = 0  # distinct sustained-sprint events across all players
 
         for tid, points in by_track.items():
             points = sorted(points, key=lambda p: p["frame"])
+            in_sprint = False
+            sprint_duration = 0.0
+
             for i in range(1, len(points)):
                 p0, p1 = points[i - 1], points[i]
                 dist = self._step_distance(p0, p1, meters_per_pixel)
@@ -338,16 +362,26 @@ class WorldMetrics:
                 dt = dt_frames / max(fps, 1e-6)
                 speed = dist / max(dt, 1e-6)
 
-                # discard physically impossible steps — tracking ID swaps or
-                # homography / scale artifacts
                 if speed > MAX_REALISTIC_SPEED_MPS:
                     continue
 
                 total_distance += dist
                 max_speed = max(max_speed, speed)
 
+                # Sustained-sprint detection (mirrors compute_per_player_metrics)
                 if speed >= SPRINT_THRESHOLD_MPS:
-                    sprint_count += 1
+                    if not in_sprint:
+                        in_sprint = True
+                        sprint_duration = 0.0
+                    sprint_duration += dt
+                else:
+                    if in_sprint and sprint_duration >= SPRINT_MIN_DURATION_S:
+                        sprint_count += 1
+                    in_sprint = False
+                    sprint_duration = 0.0
+
+            if in_sprint and sprint_duration >= SPRINT_MIN_DURATION_S:
+                sprint_count += 1
 
         return {
             "player_count": len(by_track),

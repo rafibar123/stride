@@ -65,7 +65,12 @@ class EventEngine:
 
         self.last_threat_by_team = defaultdict(float)
 
-    def _nearest_player(self, ball_center: Optional[Tuple[float, float]], active_tracks: List[Dict]) -> Optional[Dict]:
+    def _nearest_player(
+        self,
+        ball_center: Optional[Tuple[float, float]],
+        active_tracks: List[Dict],
+        possession_radius_px: float,
+    ) -> Optional[Dict]:
         if ball_center is None:
             return None
 
@@ -79,7 +84,7 @@ class EventEngine:
                 best = tr
                 best_dist = d
 
-        if best is None or best_dist > self.config.possession_radius_px:
+        if best is None or best_dist > possession_radius_px:
             return None
 
         return {
@@ -165,8 +170,11 @@ class EventEngine:
         prev = self.ball_history[-2]
         cur = self.ball_history[-1]
 
+        # Normalise to frame width so threshold is resolution-independent.
+        # ~2.2% of frame width ≈ 14 px at 640 px, 42 px at 1920 px.
+        min_move = frame_width * 0.022
         move = euclidean((prev["x"], prev["y"]), (cur["x"], cur["y"]))
-        if move < self.config.min_ball_move_for_shot_px:
+        if move < min_move:
             return
 
         direction = self._infer_team_direction(owner_team, frame_width)
@@ -204,7 +212,9 @@ class EventEngine:
                 entry["pitch_y"] = ball["pitch_y"]
             self.ball_history.append(entry)
 
-        nearest = self._nearest_player(ball_center, active_tracks)
+        # Normalise possession radius to frame width: 14 % at any resolution.
+        possession_radius = frame_width * 0.14
+        nearest = self._nearest_player(ball_center, active_tracks, possession_radius)
 
         if nearest is None:
             self.frames_since_owner_seen += 1

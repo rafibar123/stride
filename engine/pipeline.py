@@ -398,8 +398,16 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
             tr["pitch_y"]     = round(tr["y"] / max(height, 1) * 68.0, 3)
             tr["_homography"] = False
 
-    motion_metrics = world_metrics.compute_track_metrics(tracks, fps, config.meters_per_pixel)
-    per_player_metrics = world_metrics.compute_per_player_metrics(tracks, fps, config.meters_per_pixel)
+    # Use homography-derived mpp when calibration succeeded, else fall back to config default
+    if pitch_calibrator.is_ready():
+        mpp = pitch_calibrator.calibrated_meters_per_pixel(width, height)
+        log.info("[%s] calibrated mpp=%.4f m/px", run_id, mpp)
+    else:
+        mpp = config.meters_per_pixel
+        log.info("[%s] fallback mpp=%.4f m/px (no calibration)", run_id, mpp)
+
+    motion_metrics = world_metrics.compute_track_metrics(tracks, fps, mpp)
+    per_player_metrics = world_metrics.compute_per_player_metrics(tracks, fps, mpp)
     # Filter to only the selected player when a click target was provided
     if target_track_id is not None:
         per_player_metrics = [p for p in per_player_metrics if p["track_id"] == target_track_id]
@@ -421,7 +429,7 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 ball_history=ball_track,
                 fps=fps,
                 frame_skip=config.frame_skip,
-                meters_per_pixel=config.meters_per_pixel,
+                meters_per_pixel=mpp,
             )
             per_player_metrics[0].update(ball_prox)
             log.info("[%s] ball proximity  %.1fs  %.1f%%", run_id,
@@ -451,6 +459,11 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
             log.warning("[%s] pass detection failed: %s", run_id, e)
             pass_stats = {}
 
+    # Overwrite EventEngine pass counters with the more accurate detect_passes() result
+    if pass_stats:
+        event_metrics["pass_success"] = int(pass_stats.get("accurate", event_metrics["pass_success"]))
+        event_metrics["pass_fail"]    = int(pass_stats.get("failed",   event_metrics["pass_fail"]))
+
     # ── FIFA-style player rating ───────────────────────────────────────────────
     rating: Dict = {}
     if per_player_metrics:
@@ -474,7 +487,7 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 track_history=track_history,
                 target_track_id=target_track_id,
                 fps=fps,
-                meters_per_pixel=config.meters_per_pixel,
+                meters_per_pixel=mpp,
             )
             log.info(
                 "[%s] advanced metrics  activity=%s  dir_changes=%d  sprints=%d",
