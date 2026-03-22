@@ -7,6 +7,7 @@ import time
 import numpy as np
 
 from engine.detection import Detector, DetectionConfig
+from engine.enhance import FrameEnhancer, EnhanceConfig
 from engine.events import EventEngine, EventsConfig
 from engine.team import TeamClassifier, TeamClassificationConfig
 from engine.pitch import PitchCalibrator, PitchConfig, WorldMetrics, DEFAULT_METERS_PER_PIXEL
@@ -25,6 +26,7 @@ class PipelineConfig:
     # Default tuned for a 576 px-wide side-angle TikTok shot (~35 m visible).
     meters_per_pixel: float = DEFAULT_METERS_PER_PIXEL
     detection: DetectionConfig = field(default_factory=DetectionConfig)
+    enhance: EnhanceConfig = field(default_factory=EnhanceConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     team: TeamClassificationConfig = field(default_factory=TeamClassificationConfig)
     pitch: PitchConfig = field(default_factory=PitchConfig)
@@ -186,11 +188,13 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
     _report(5, "models_loading")
     t_models = time.time()
     detector = Detector(config.detection)
+    frame_enhancer = FrameEnhancer(config.enhance)
     team_classifier = TeamClassifier(config.team)
     event_engine = EventEngine(config.events)
     pitch_calibrator = PitchCalibrator(config.pitch)
     world_metrics = WorldMetrics()
-    log.info("[%s] models ready  %.2fs", run_id, time.time() - t_models)
+    log.info("[%s] models ready  enhancer=%s  %.2fs",
+             run_id, config.enhance.enabled, time.time() - t_models)
     _report(10, "detecting")
 
     # frame_idx tracks the real video frame number so that all timestamp-based
@@ -233,6 +237,7 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 log.warning("[%s] retrieve() failed at frame_idx=%d", run_id, frame_idx)
                 continue
 
+            frame = frame_enhancer.enhance(frame)
             frames_decoded += 1
 
             # Detailed log every 10 decoded frames
@@ -345,8 +350,8 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
             "pitch_calibration",
             "events"
         ])
-        log.info("[%s] frame loop done  frames_scanned=%d  frames_decoded=%d  elapsed=%.2fs",
-                 run_id, frame_idx, frames_decoded, time.time() - t_loop)
+        log.info("[%s] frame loop done  frames_scanned=%d  frames_decoded=%d  elapsed=%.2fs  enhance_avg=%.1fms",
+                 run_id, frame_idx, frames_decoded, time.time() - t_loop, frame_enhancer.avg_ms())
 
     except Exception as e:
         log.exception("[%s] exception in frame loop: %s", run_id, e)
