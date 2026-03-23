@@ -301,6 +301,15 @@ class PositionKalmanFilter:
         self.P = (np.eye(4) - K @ self.H) @ P_pred
         return float(self.x[0, 0]), float(self.x[1, 0])
 
+    def predict(self) -> Optional[Tuple[float, float]]:
+        """Advance the filter one step without a measurement (occlusion/miss).
+        Returns predicted (x, y) or None if not initialised."""
+        if self.x is None:
+            return None
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        return float(self.x[0, 0]), float(self.x[1, 0])
+
 # Pixel-to-metre scale for angled / side-view cameras.
 # Calibrated from debug frames: centre circle (~18.3 m diameter) spans
 # ~170 px horizontally at mid-field → 18.3/170 ≈ 0.108 m/px.

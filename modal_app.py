@@ -30,6 +30,8 @@ image = (
         "pillow",
         "anthropic>=0.50.0",
     )
+    # Pre-download YOLOv8x weights into the image — avoids cold-start download
+    .run_commands("python -c \"from ultralytics import YOLO; YOLO('yolov8x.pt')\"")
     .add_local_dir("engine", remote_path="/root/engine")
 )
 
@@ -41,8 +43,8 @@ with image.imports():
 
 @app.function(
     image=image,
-    gpu="T4",
-    timeout=600,
+    gpu="A10G",     # A10G: 3x faster than T4 — essential for yolov8x@1280
+    timeout=3600,   # 60-minute hard cap — covers full football halves
     min_containers=0,
 )
 @modal.fastapi_endpoint(method="POST")
@@ -70,11 +72,11 @@ async def analyze_video(request: Request):
     if not contents:
         return {"status": "error", "error": "video file is empty"}
 
-    frame_skip       = int(form.get("frame_skip", 10))
+    frame_skip       = int(form.get("frame_skip", 5))
     click_x          = float(form.get("click_x", 0.5))
     click_y          = float(form.get("click_y", 0.5))
     jersey_color     = form.get("jersey_color") or None
-    max_duration_s   = float(form.get("max_duration_s", 300))  # GPU default: 5 min
+    max_duration_s   = float(form.get("max_duration_s", 3600))  # default: full video
 
     run_id = str(uuid.uuid4())
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4", prefix=f"stride_{run_id}_")
@@ -85,7 +87,7 @@ async def analyze_video(request: Request):
 
         config = PipelineConfig(
             frame_skip=max(1, min(10, frame_skip)),
-            max_duration_s=max(10, min(600, max_duration_s)),  # cap at 10 min
+            max_duration_s=max(10, max_duration_s),  # no upper cap
         )
         result = run_pipeline(
             tmp_path, config,

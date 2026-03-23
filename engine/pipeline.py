@@ -21,7 +21,7 @@ log = logging.getLogger("pipeline")
 @dataclass
 class PipelineConfig:
     max_duration_s: float = 3600.0  # no practical cap — full video processed
-    frame_skip: int = 10         # process every Nth frame; 1 = every frame, 10 = every 10th
+    frame_skip: int = 5          # process every Nth frame; 1 = every frame, 5 = every 5th
     # Pixel-to-metre scale for angled cameras where homography is unavailable.
     # Default tuned for a 576 px-wide side-angle TikTok shot (~35 m visible).
     meters_per_pixel: float = DEFAULT_METERS_PER_PIXEL
@@ -217,6 +217,8 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
     # Kalman filter for ball position — smooths detection noise before event engine sees it.
     # Reduces false possession/pass events caused by jittery ball detections.
     ball_kf = PositionKalmanFilter(process_noise=2.0, measurement_noise=8.0)
+    _last_ball_frame: int = -999     # last real frame where ball was detected
+    _BALL_PREDICT_MAX_FRAMES = 20    # ~0.8 s at 25 fps — predict position during short occlusion
 
     team_votes = defaultdict(lambda: defaultdict(int))
     track_history: Dict[int, List[Dict]] = {}
@@ -224,6 +226,7 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
     target_track_id: Optional[int] = None
     target_last_pos: Optional[tuple] = None   # last known (cx, cy) of target player
     target_team_id: Optional[int] = None       # team of target player for re-association
+    target_appearance: Optional[np.ndarray] = None  # HSV histogram fingerprint of target at lock time
     _RECALIBRATE_EVERY = 150                   # decoded frames between homography recalibrations
 
     log.info("[%s] entering frame loop", run_id)
@@ -295,6 +298,22 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 hw = (bx2 - bx1) / 2.0
                 hh = (by2 - by1) / 2.0
                 ball_det["bbox"] = [sx - hw, sy - hh, sx + hw, sy + hh]
+                _last_ball_frame = frame_idx
+            elif (frame_idx - _last_ball_frame) <= _BALL_PREDICT_MAX_FRAMES:
+                # Ball not detected but recently seen — use Kalman velocity to predict position.
+                # Feeds the event engine so possession/pass logic isn't starved during occlusion.
+                predicted = ball_kf.predict()
+                if predicted is not None:
+                    px, py = predicted
+                    # Clamp to frame bounds
+                    px = max(0.0, min(float(width), px))
+                    py = max(0.0, min(float(height), py))
+                    ball_det = {
+                        "center": [px, py],
+                        "bbox": [px - 10, py - 10, px + 10, py + 10],
+                        "conf": 0.0,
+                        "predicted": True,
+                    }
 
             active_tracks = detector.detect_and_track(frame, frame_idx)
             active_tracks = team_classifier.classify(frame, active_tracks)
@@ -325,6 +344,16 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 target_track_id = best["track_id"]
                 target_last_pos = tuple(best["center"])
                 target_team_id  = best.get("team_id")
+                # Build HSV histogram fingerprint for re-association verification
+                try:
+                    x1, y1, x2, y2 = best["bbox"]
+                    crop = frame[max(0,int(y1)):int(y2), max(0,int(x1)):int(x2)]
+                    if crop.size > 0:
+                        hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+                        target_appearance = cv2.calcHist([hsv_crop], [0, 1], None, [16, 16], [0, 180, 0, 256])
+                        cv2.normalize(target_appearance, target_appearance)
+                except Exception:
+                    target_appearance = None
                 log.info("[%s] locked target track_id=%d  click=(%.3f, %.3f)  jersey=%s",
                          run_id, target_track_id, click_x, click_y, jersey_color)
 
@@ -342,7 +371,21 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 def _reassoc_score(tr):
                     dx = tr["center"][0] - target_last_pos[0]
                     dy = tr["center"][1] - target_last_pos[1]
-                    return (dx * dx + dy * dy) / diag2
+                    dist_score = (dx * dx + dy * dy) / diag2
+                    if target_appearance is not None:
+                        try:
+                            x1, y1, x2, y2 = tr["bbox"]
+                            crop = frame[max(0,int(y1)):int(y2), max(0,int(x1)):int(x2)]
+                            if crop.size > 0:
+                                hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+                                hist = cv2.calcHist([hsv_crop], [0, 1], None, [16, 16], [0, 180, 0, 256])
+                                cv2.normalize(hist, hist)
+                                sim = cv2.compareHist(target_appearance, hist, cv2.HISTCMP_CORREL)
+                                appear_score = max(0.0, 1.0 - sim)  # 0 = identical, 1 = totally different
+                                return dist_score * 0.6 + appear_score * 0.4
+                        except Exception:
+                            pass
+                    return dist_score
 
                 best = min(candidates, key=_reassoc_score)
                 # Only re-associate if the candidate is within 20% of the frame diagonal
