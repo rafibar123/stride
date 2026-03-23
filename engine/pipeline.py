@@ -645,15 +645,63 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
              run_id, time.time() - t0, len(tracks), len(events), len(errors))
     _report(100, "done")
 
+    # ── Tracking quality score (0-100) ────────────────────────────────────────
+    # A numeric score for the frontend — avoids letting the frontend guess
+    # quality from boolean flags.
+    #
+    # Components                          Weight   Notes
+    # ─────────────────────────────────── ──────   ──────────────────────────
+    # Target player coverage              35%      % of decoded frames target was visible
+    # Ball detection coverage             25%      % of decoded frames ball was detected (hard; 50% = full score)
+    # Pitch calibration                   20%      homography ready = 1.0, else 0.4
+    # Team classification                 10%      2 teams found = 1.0, 1 = 0.6, 0 = 0.2
+    # Event richness                      10%      ≥10 events = 1.0, scaled below
+
+    _q_target = 0.0
+    if target_track_id is not None and frames_decoded > 0:
+        target_frames = len(track_history.get(target_track_id, []))
+        _q_target = min(target_frames / frames_decoded, 1.0)
+
+    _q_ball = 0.0
+    if frames_decoded > 0:
+        real_ball_frames = sum(1 for b in ball_track if not b.get("predicted"))
+        _q_ball = min((real_ball_frames / frames_decoded) * 2.0, 1.0)  # 50% detected = full score
+
+    _q_pitch = 1.0 if pitch_calibrator.is_ready() else 0.4
+
+    _q_team = (1.0 if len(possession_by_team) >= 2
+               else 0.6 if len(possession_by_team) == 1
+               else 0.2)
+
+    _q_events = min(len(events) / 10.0, 1.0) if events else 0.2
+
+    tracking_quality = round(
+        (_q_target  * 0.35 +
+         _q_ball    * 0.25 +
+         _q_pitch   * 0.20 +
+         _q_team    * 0.10 +
+         _q_events  * 0.10) * 100,
+        1,
+    )
+
     quality = {
-        "has_tracks": len(tracks) > 0,
-        "has_ball_track": len(ball_track) > 0,
-        "usable": frame_idx > 0 and len(tracks) > 0,
-        "has_events": len(events) > 0,
-        "has_pass_network": len(pass_network) > 0,
-        "has_team_pass_network": len(team_pass_network) > 0,
-        "has_team_possession": len(possession_by_team) > 0,
-        "has_pitch_calibration": pitch_calibrator.is_ready(),
+        "tracking_quality_score": tracking_quality,
+        "has_tracks":             len(tracks) > 0,
+        "has_ball_track":         len(ball_track) > 0,
+        "usable":                 frame_idx > 0 and len(tracks) > 0,
+        "has_events":             len(events) > 0,
+        "has_pass_network":       len(pass_network) > 0,
+        "has_team_pass_network":  len(team_pass_network) > 0,
+        "has_team_possession":    len(possession_by_team) > 0,
+        "has_pitch_calibration":  pitch_calibrator.is_ready(),
+        # Component breakdown — useful for debugging low scores
+        "quality_components": {
+            "target_coverage_pct": round(_q_target * 100, 1),
+            "ball_detection_pct":  round(_q_ball   * 50,  1),  # back to real pct
+            "pitch_calibrated":    pitch_calibrator.is_ready(),
+            "teams_found":         len(possession_by_team),
+            "events_detected":     len(events),
+        },
     }
 
     video_meta = {
