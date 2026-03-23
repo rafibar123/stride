@@ -21,11 +21,15 @@ from typing import Dict, List, Optional, Tuple
 # Ball within this fraction of frame_width from player's foot = contact range
 _NEAR_PLAYER_FRAC   = 0.08
 
-# Ball speed above this fraction of frame_width per real-second = kicked ball
-_KICK_VEL_FRAC      = 0.8
+# Ball speed above this fraction of frame_width per real-second = kicked ball.
+# With frame_skip=10 at 25fps each processed frame covers 0.4s, so the ball
+# traverses _KICK_VEL_FRAC * frame_width * 0.4 pixels between detections.
+# At 0.8 that requires ~32 m on a half-pitch camera — impossible.
+# At 0.15 that requires ~6 m at 50 km/h on a half-pitch view — realistic.
+_KICK_VEL_FRAC      = 0.15
 
 # Ball speed below this = ball has essentially stopped (km/h equivalent ~zero)
-_RECEIVE_VEL_FRAC   = 0.18
+_RECEIVE_VEL_FRAC   = 0.06
 
 # Potential receiver within this fraction of frame_width from stopped ball
 _RECEIVE_DIST_FRAC  = 0.13
@@ -36,8 +40,9 @@ _PASS_WINDOW_S      = 3.5
 # Minimum real-time gap between two detected kick events (de-duplication)
 _KICK_COOLDOWN_S    = 0.8
 
-# Require ball velocity to spike within this many real-seconds after contact
-_KICK_SPIKE_WINDOW_S = 0.6
+# Require ball velocity to spike within this many real-seconds after contact.
+# Widened to 1.0s so even with frame_skip=10 we always check at least 2 frames.
+_KICK_SPIKE_WINDOW_S = 1.0
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
