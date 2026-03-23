@@ -257,6 +257,18 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 log.warning("[%s] retrieve() failed at frame_idx=%d", run_id, frame_idx)
                 continue
 
+            # Auto-upscale low-resolution frames to 720p before detection.
+            # Lanczos4 is high-quality, fast (~2ms), and ensures YOLO always
+            # gets enough resolution — critical for small/distant players and ball.
+            fh, fw = frame.shape[:2]
+            if fh < 720:
+                scale = 720.0 / fh
+                frame = cv2.resize(
+                    frame,
+                    (int(fw * scale), 720),
+                    interpolation=cv2.INTER_LANCZOS4,
+                )
+
             frame = frame_enhancer.enhance(frame)
             frames_decoded += 1
 
