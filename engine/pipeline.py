@@ -10,7 +10,7 @@ from engine.detection import Detector, DetectionConfig
 from engine.enhance import FrameEnhancer, EnhanceConfig
 from engine.events import EventEngine, EventsConfig
 from engine.team import TeamClassifier, TeamClassificationConfig
-from engine.pitch import PitchCalibrator, PitchConfig, WorldMetrics, DEFAULT_METERS_PER_PIXEL
+from engine.pitch import PitchCalibrator, PitchConfig, WorldMetrics, DEFAULT_METERS_PER_PIXEL, PositionKalmanFilter
 from engine.rating import compute_player_rating
 from engine.passes import detect_passes
 from engine.advanced_metrics import compute_advanced_metrics
@@ -20,7 +20,7 @@ log = logging.getLogger("pipeline")
 
 @dataclass
 class PipelineConfig:
-    max_duration_s: float = 30.0  # hard cap on analysed video duration
+    max_duration_s: float = 3600.0  # no practical cap — full video processed
     frame_skip: int = 10         # process every Nth frame; 1 = every frame, 10 = every 10th
     # Pixel-to-metre scale for angled cameras where homography is unavailable.
     # Default tuned for a 576 px-wide side-angle TikTok shot (~35 m visible).
@@ -60,6 +60,7 @@ class PipelineResult:
         rating: Dict,
         pass_stats: Dict,
         advanced_metrics: Dict,
+        goal_events: List[Dict],
     ):
         self.run_id = run_id
         self.engine_name = engine_name
@@ -86,6 +87,7 @@ class PipelineResult:
         self.rating = rating
         self.pass_stats = pass_stats
         self.advanced_metrics = advanced_metrics
+        self.goal_events = goal_events
 
     def to_dict(self):
         return {
@@ -117,6 +119,7 @@ class PipelineResult:
             "rating": self.rating,
             "pass_stats": self.pass_stats,
             "advanced_metrics": self.advanced_metrics,
+            "goal_events": self.goal_events,
         }
 
 
@@ -131,10 +134,17 @@ def _jersey_color_score(frame, bbox: list, hex_color: str) -> float:
         b = int(hex_color[5:7], 16)
         target = np.array([b, g, r], dtype=np.float32)  # BGR
 
+        fh, fw = frame.shape[:2]
         x1, y1, x2, y2 = [int(v) for v in bbox]
+        x1 = max(0, x1); x2 = min(fw, x2)
+        y1 = max(0, y1); y2 = min(fh, y2)
+        if x2 <= x1 or y2 <= y1:
+            return 0.5
         h = y2 - y1
         # Sample the middle-third (torso), avoid head and legs
-        crop = frame[y1 + h // 4: y1 + (3 * h) // 4, x1:x2]
+        ty1 = max(0, y1 + h // 4)
+        ty2 = min(fh, y1 + (3 * h) // 4)
+        crop = frame[ty1:ty2, x1:x2]
         if crop.size == 0:
             return 0.5
 
@@ -204,10 +214,17 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
     heatmap_points = []
     frame_skip = max(1, config.frame_skip)
 
+    # Kalman filter for ball position — smooths detection noise before event engine sees it.
+    # Reduces false possession/pass events caused by jittery ball detections.
+    ball_kf = PositionKalmanFilter(process_noise=2.0, measurement_noise=8.0)
+
     team_votes = defaultdict(lambda: defaultdict(int))
     track_history: Dict[int, List[Dict]] = {}
     first_frame = None
     target_track_id: Optional[int] = None
+    target_last_pos: Optional[tuple] = None   # last known (cx, cy) of target player
+    target_team_id: Optional[int] = None       # team of target player for re-association
+    _RECALIBRATE_EVERY = 150                   # decoded frames between homography recalibrations
 
     log.info("[%s] entering frame loop", run_id)
     t_loop = time.time()
@@ -260,8 +277,24 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 if config.pitch.enabled:
                     pitch_calibrator.estimate_from_frame(first_frame)
                 log.info("[%s] pitch calibration done  ready=%s", run_id, pitch_calibrator.is_ready())
+            elif config.pitch.enabled and frames_decoded % _RECALIBRATE_EVERY == 0:
+                # Re-calibrate homography every N decoded frames to handle camera panning.
+                # Only update when a new calibration succeeds — keeps last good matrix otherwise.
+                pitch_calibrator.estimate_from_frame(frame)
 
             ball_det = detector.detect_ball(frame)
+
+            # Smooth ball position with Kalman to suppress single-frame detection jitter.
+            # This reduces false possession flips and spurious pass events.
+            if ball_det is not None:
+                sx, sy = ball_kf.update(ball_det["center"][0], ball_det["center"][1])
+                ball_det = dict(ball_det)
+                ball_det["center"] = [sx, sy]
+                # Also update bbox centre to stay consistent
+                bx1, by1, bx2, by2 = ball_det["bbox"]
+                hw = (bx2 - bx1) / 2.0
+                hh = (by2 - by1) / 2.0
+                ball_det["bbox"] = [sx - hw, sy - hh, sx + hw, sy + hh]
 
             active_tracks = detector.detect_and_track(frame, frame_idx)
             active_tracks = team_classifier.classify(frame, active_tracks)
@@ -270,8 +303,11 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
             for tr in active_tracks:
                 track_history.setdefault(tr["track_id"], []).append(tr)
 
-            # Lock onto the player nearest the click point (first frame with detections)
+            # ── Target player locking & re-association ───────────────────────
+            active_ids = {tr["track_id"] for tr in active_tracks}
+
             if target_track_id is None and click_x is not None and click_y is not None and active_tracks:
+                # Initial lock: nearest player to click point, optionally weighted by jersey colour
                 click_px = click_x * width
                 click_py = click_y * height
                 diag2 = max(width * width + height * height, 1)
@@ -279,17 +315,52 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
                 def _lock_score(tr):
                     dx = tr["center"][0] - click_px
                     dy = tr["center"][1] - click_py
-                    dist_score = (dx * dx + dy * dy) / diag2  # 0-1, lower = closer
+                    dist_score = (dx * dx + dy * dy) / diag2
                     if jersey_color and len(jersey_color) == 7:
-                        # 70% distance, 30% jersey colour match
                         color_score = 1.0 - _jersey_color_score(frame, tr["bbox"], jersey_color)
                         return dist_score * 0.70 + color_score * 0.30
                     return dist_score
 
                 best = min(active_tracks, key=_lock_score)
                 target_track_id = best["track_id"]
+                target_last_pos = tuple(best["center"])
+                target_team_id  = best.get("team_id")
                 log.info("[%s] locked target track_id=%d  click=(%.3f, %.3f)  jersey=%s",
                          run_id, target_track_id, click_x, click_y, jersey_color)
+
+            elif target_track_id is not None and target_track_id not in active_ids and active_tracks and target_last_pos is not None:
+                # Target track lost — try to re-associate with the closest same-team player.
+                # This handles: temporary occlusion, short exits, ID reset after long gap.
+                diag2 = max(width * width + height * height, 1)
+                candidates = [
+                    tr for tr in active_tracks
+                    if target_team_id is None or tr.get("team_id") == target_team_id
+                ]
+                if not candidates:
+                    candidates = active_tracks  # fall back to any player if team unknown
+
+                def _reassoc_score(tr):
+                    dx = tr["center"][0] - target_last_pos[0]
+                    dy = tr["center"][1] - target_last_pos[1]
+                    return (dx * dx + dy * dy) / diag2
+
+                best = min(candidates, key=_reassoc_score)
+                # Only re-associate if the candidate is within 20% of the frame diagonal
+                if _reassoc_score(best) < 0.04:
+                    old_id = target_track_id
+                    target_track_id = best["track_id"]
+                    target_last_pos = tuple(best["center"])
+                    log.info("[%s] target re-associated  %d → %d  dist=%.3f",
+                             run_id, old_id, target_track_id, _reassoc_score(best) ** 0.5)
+
+            # Update last known position whenever target is visible
+            if target_track_id is not None and target_track_id in active_ids:
+                for tr in active_tracks:
+                    if tr["track_id"] == target_track_id:
+                        target_last_pos = tuple(tr["center"])
+                        if tr.get("team_id") is not None:
+                            target_team_id = tr["team_id"]
+                        break
 
             # collect team votes and player heatmap
             for tr in active_tracks:
@@ -420,10 +491,19 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
     event_metrics = event_engine.export_event_metrics()
     events = event_engine.export_events()
     ball_track = event_engine.export_ball_track()
+    goal_events = event_engine.export_goal_events()
     pass_network = event_engine.export_pass_network()
     team_pass_network = event_engine.export_team_pass_network()
     possession_by_team = event_engine.export_possession_by_team()
     possession_by_player = event_engine.export_possession_by_player()
+
+    # ── Goals and assists for the tracked player ───────────────────────────────
+    if target_track_id is not None and per_player_metrics:
+        target_goals   = sum(1 for e in goal_events if e.get("scorer_id") == target_track_id)
+        target_assists = sum(1 for e in goal_events if e.get("assist_id")  == target_track_id)
+        per_player_metrics[0]["goals"]   = target_goals
+        per_player_metrics[0]["assists"] = target_assists
+        log.info("[%s] target player goals=%d  assists=%d", run_id, target_goals, target_assists)
 
     # ── Ball proximity ("time with ball") ──────────────────────────────────────
     if target_track_id is not None and per_player_metrics:
@@ -465,7 +545,8 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
             pass_stats = {}
 
     # Overwrite EventEngine pass counters with the more accurate detect_passes() result
-    if pass_stats:
+    # Only overwrite when passes were actually detected (total > 0 prevents zeroing out good EventEngine counts)
+    if pass_stats.get("total", 0) > 0:
         event_metrics["pass_success"] = int(pass_stats.get("accurate", event_metrics["pass_success"]))
         event_metrics["pass_fail"]    = int(pass_stats.get("failed",   event_metrics["pass_fail"]))
 
@@ -555,4 +636,5 @@ def run_pipeline(video_path: str, config: PipelineConfig, run_id: str, progress_
         rating=rating,
         pass_stats=pass_stats,
         advanced_metrics=advanced_metrics,
+        goal_events=goal_events,
     )

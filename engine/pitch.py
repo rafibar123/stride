@@ -265,7 +265,7 @@ class PitchCalibrator:
 # Fastest recorded human sprint ~10.4 m/s (Usain Bolt).
 # 11 m/s (≈40 km/h) is the hard ceiling — anything above this is a tracking
 # artifact (ID swap, bad homography jump) and is discarded entirely.
-MAX_REALISTIC_SPEED_MPS = 10.0   # 36 km/h — absolute human sprint ceiling
+MAX_REALISTIC_SPEED_MPS = 11.5   # 41.4 km/h — Mbappé/Usain Bolt range; 10.0 was too aggressive, cut 3-5% of real sprints
 
 # Youth players rarely exceed 18 km/h in a sprint.
 SPRINT_THRESHOLD_MPS    = 5.0    # 18 km/h
@@ -492,14 +492,21 @@ class WorldMetrics:
         for tid, points in by_track.items():
             points = sorted(points, key=lambda p: p["frame"])
 
-            # ── 1. Kalman-smooth pixel positions ─────────────────────────────
-            kf = PositionKalmanFilter()
+            # ── 1. Kalman-smooth pixel positions AND pitch coordinates ────────
+            kf       = PositionKalmanFilter()
+            kf_pitch = PositionKalmanFilter(process_noise=0.5, measurement_noise=1.5)
             smoothed: List[Dict] = []
             for pt in points:
                 sx, sy = kf.update(pt["x"], pt["y"])
                 sp = dict(pt)
                 sp["x"] = sx
                 sp["y"] = sy
+                # Also smooth pitch coords so that _step_distance (homography path)
+                # benefits from the same noise suppression.
+                if sp.get("_homography") and "pitch_x" in sp and sp["pitch_x"] is not None:
+                    spx, spy = kf_pitch.update(float(sp["pitch_x"]), float(sp["pitch_y"]))
+                    sp["pitch_x"] = spx
+                    sp["pitch_y"] = spy
                 smoothed.append(sp)
 
             # ── 2. Per-step distances, raw speeds, and time deltas ───────────
@@ -509,7 +516,7 @@ class WorldMetrics:
             raw_dts: List[float] = []
 
             for i, pt in enumerate(smoothed):
-                if "pitch_x" in pt:
+                if pt.get("pitch_x") is not None:
                     zone_frames[self._zone_for_x(pt["pitch_x"])] += 1
                 if i == 0:
                     continue
@@ -527,8 +534,10 @@ class WorldMetrics:
                 raw_speeds.append(spd)
                 raw_dts.append(dt)
 
-            # ── 3. Rolling-median speed (5-frame window) ─────────────────────
-            smoothed_speeds = self._rolling_median(raw_speeds, window=5)
+            # ── 3. Rolling-median speed (3-frame window) ─────────────────────
+            # With frame_skip=10 a 5-frame window covers 2 s — too wide, blurs sprints.
+            # 3 frames = 1.2 s: responsive to genuine speed changes without noise.
+            smoothed_speeds = self._rolling_median(raw_speeds, window=3)
 
             total_dist = sum(raw_dists)
             max_spd = max(smoothed_speeds) if smoothed_speeds else 0.0

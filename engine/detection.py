@@ -5,14 +5,14 @@ from ultralytics import YOLO
 
 @dataclass
 class DetectionConfig:
-    # yolov8s at 640px: ~20x faster than yolov8x@1280px on CPU, still highly
-    # accurate for person detection and ByteTrack-based player tracking.
-    player_model: str = "yolov8s.pt"
-    ball_model: str = "yolov8s.pt"
-    player_conf: float = 0.25
-    ball_conf: float = 0.08
-    player_imgsz: int = 640
-    ball_imgsz: int = 640
+    # yolov8x at 1280px: highest accuracy for player detection on GPU.
+    # Ball uses 640px — fine detail at higher res rarely helps vs. speed cost.
+    player_model: str = "yolov8x.pt"
+    ball_model: str = "yolov8x.pt"
+    player_conf: float = 0.22     # slightly lower — yolov8x is more precise so fewer FP
+    ball_conf: float = 0.06       # lower for ball: harder to detect, FP filtered by class
+    player_imgsz: int = 1280      # higher res catches distant players
+    ball_imgsz: int = 640         # ball detection stays at 640 (adequate)
     person_class_id: int = 0
     sports_ball_class_id: int = 32
     # Ignore detections whose centre is in the top N% of the frame.
@@ -108,7 +108,12 @@ class Detector:
         return out
 
     def detect_and_track(self, frame, frame_idx: int) -> List[Dict]:
-        """Detect and track players using ByteTrack via ultralytics persist mode."""
+        """Detect and track players using BoT-SORT via ultralytics persist mode.
+
+        BoT-SORT adds appearance-based ReID on top of ByteTrack kinematics:
+        when a player exits and re-enters the frame the same track_id is
+        preserved, preventing split metrics and wrong-player attribution.
+        """
         out: List[Dict] = []
         if frame is None:
             return out
@@ -119,7 +124,7 @@ class Detector:
                 conf=self.config.player_conf,
                 imgsz=self.config.player_imgsz,
                 persist=True,
-                tracker="bytetrack.yaml",
+                tracker="botsort.yaml",
                 verbose=False,
                 classes=[self.config.person_class_id],
             )[0]
