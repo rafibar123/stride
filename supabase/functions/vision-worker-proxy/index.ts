@@ -14,14 +14,14 @@
  *   analysis_id  — Supabase row ID to update (required)
  *   click_x      — float 0-1 (optional, default 0.5)
  *   click_y      — float 0-1 (optional, default 0.5)
- *   frame_skip   — int 1-10  (optional, default 10)
+ *   frame_skip   — int 1-20  (optional, default 10)
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const STRIDE_API    = "https://web-production-c4e3a.up.railway.app";
 const POLL_INTERVAL = 2000;   // ms between /progress polls
-const POLL_TIMEOUT  = 20 * 60 * 1000; // 20 min hard cap
+const POLL_TIMEOUT  = 100 * 60 * 1000; // 100 min — covers 90-min match + server overhead
 
 const corsHeaders = {
   "Access-Control-Allow-Origin":  "*",
@@ -36,9 +36,9 @@ function num(v: unknown, fallback = 0): number {
 }
 
 function ratingToLevel(overall: number): string {
-  if (overall >= 85) return "elite";
-  if (overall >= 75) return "advanced";
-  if (overall >= 60) return "intermediate";
+  if (overall >= 8.5) return "elite";
+  if (overall >= 7.5) return "advanced";
+  if (overall >= 6.0) return "intermediate";
   return "beginner";
 }
 
@@ -66,20 +66,23 @@ function buildAnalysisResult(r: Record<string, unknown>) {
   } : null;
 
   return {
-    score:             overallScore > 0 ? overallScore : null,
-    level:             overallScore > 0 ? ratingToLevel(overallScore) : null,
-    is_fallback:       false,
-    data_source:       "stride_gpu",
+    score:              overallScore > 0 ? overallScore : null,
+    level:              overallScore > 0 ? ratingToLevel(overallScore) : null,
+    is_fallback:        false,
+    data_source:        "stride_gpu",
     radar,
-    completed_passes:  completedPasses,
-    failed_passes:     failedPasses,
-    shots:             num(ev.shot_count),
-    shots_on_target:   null,
+    completed_passes:   completedPasses,
+    failed_passes:      failedPasses,
+    shots:              num(ev.shot_count),
+    shots_on_target:    null,
     xG,
-    total_distance_m:  num(player.distance_m),
-    top_speed_mps:     num(player.max_speed_mps),
-    minutes_played:    frames > 0 ? frames / fps / 60 : null,
-    heatmap_url:       null,
+    total_distance_km:  num(player.distance_m) / 1000,
+    avg_speed_kmh:      num(player.avg_speed_mps) * 3.6,
+    top_speed_kmh:      num(player.max_speed_mps) * 3.6,
+    goals:              num(player.goals),
+    assists:            num(player.assists),
+    minutes_played:     frames > 0 ? frames / fps / 60 : null,
+    heatmap_url:        null,
   };
 }
 
@@ -110,10 +113,11 @@ Deno.serve(async (req: Request) => {
     if (!analysisId) throw new Error("Missing 'analysis_id' field");
 
     // ── Mark as processing ────────────────────────────────────────────────────
-    await supabase
+    const { error: markErr } = await supabase
       .from("analyses")
       .update({ status: "processing", ai_progress: 5 })
       .eq("id", analysisId);
+    if (markErr) console.error("[vision-worker-proxy] mark processing:", markErr.message);
 
     // ── Step 1: upload to Railway /preview ────────────────────────────────────
     const previewFd = new FormData();
@@ -126,15 +130,16 @@ Deno.serve(async (req: Request) => {
     if (!previewRes.ok) throw new Error(`/preview failed: ${previewRes.status}`);
     const { preview_id } = await previewRes.json() as { preview_id: string };
 
-    await supabase
+    const { error: previewProgressErr } = await supabase
       .from("analyses")
       .update({ ai_progress: 10 })
       .eq("id", analysisId);
+    if (previewProgressErr) console.error("[vision-worker-proxy] progress 10:", previewProgressErr.message);
 
     // ── Step 2: start analysis job ────────────────────────────────────────────
     const analyzeFd = new FormData();
     analyzeFd.append("preview_id", preview_id);
-    analyzeFd.append("frame_skip", String(Math.max(1, Math.min(10, frameSkip))));
+    analyzeFd.append("frame_skip", String(Math.max(1, Math.min(20, frameSkip))));
     analyzeFd.append("click_x",   String(clickX));
     analyzeFd.append("click_y",   String(clickY));
 
@@ -163,10 +168,11 @@ Deno.serve(async (req: Request) => {
 
       // Mirror GPU progress into Supabase so the client can show a live bar
       if (typeof progress.pct === "number") {
-        await supabase
+        const { error: pollUpdateErr } = await supabase
           .from("analyses")
           .update({ ai_progress: Math.min(95, Math.round(progress.pct)) })
           .eq("id", analysisId);
+        if (pollUpdateErr) console.warn("[vision-worker-proxy] progress mirror:", pollUpdateErr.message);
       }
 
       if (progress.stage === "done" && progress.result) {
@@ -183,7 +189,7 @@ Deno.serve(async (req: Request) => {
     // ── Step 4: write results to Supabase ────────────────────────────────────
     const analysisResult = buildAnalysisResult(strideResult);
 
-    await supabase
+    const { error: writeErr } = await supabase
       .from("analyses")
       .update({
         status:          "completed",
@@ -193,6 +199,7 @@ Deno.serve(async (req: Request) => {
         completed_at:    new Date().toISOString(),
       })
       .eq("id", analysisId);
+    if (writeErr) console.error("[vision-worker-proxy] final write:", writeErr.message);
 
     return new Response(
       JSON.stringify({ ok: true, analysis_id: analysisId, result: analysisResult }),

@@ -2,7 +2,7 @@ import { normalizeAnalysis, type NormalizedAnalysis, type RawEngineResponse } fr
 
 const STRIDE_API = "https://web-production-c4e3a.up.railway.app";
 const POLL_INTERVAL_MS = 1500;
-const POLL_TIMEOUT_MS = 22 * 60 * 1000; // 22 min — matches Railway's 15-min cap + buffer
+const POLL_TIMEOUT_MS = 100 * 60 * 1000; // 100 min — covers 90-min match + server overhead
 
 // ── Map Stride pipeline result → RawEngineResponse ────────────────────────────
 // Stride returns a full PipelineResult; we pick the fields Overball needs.
@@ -29,6 +29,8 @@ function strideToRaw(result: Record<string, unknown>): RawEngineResponse {
     shots:           (ev.shot_count as number)    ?? 0,
     shots_on_target: null,                          // not tracked by Stride
     xg,
+    goals:           (player.goals   as number)   ?? 0,
+    assists:         (player.assists as number)   ?? 0,
     distance_km:     player.distance_m != null
                        ? (player.distance_m as number) / 1000
                        : null,

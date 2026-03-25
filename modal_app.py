@@ -44,7 +44,7 @@ with image.imports():
 @app.function(
     image=image,
     gpu="A10G",     # A10G: 3x faster than T4 — essential for yolov8x@1280
-    timeout=3600,   # 60-minute hard cap — covers full football halves
+    timeout=7200,   # 120-minute hard cap — covers 90-min match + upload/overhead
     min_containers=0,
 )
 @modal.fastapi_endpoint(method="POST")
@@ -86,7 +86,7 @@ async def analyze_video(request: Request):
             fh.write(contents)
 
         config = PipelineConfig(
-            frame_skip=max(1, min(10, frame_skip)),
+            frame_skip=max(1, min(20, frame_skip)),
             max_duration_s=max(10, max_duration_s),  # no upper cap
         )
         result = run_pipeline(

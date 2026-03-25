@@ -114,7 +114,7 @@ def _save_upload_to_tmp(video: UploadFile, uid: str) -> str:
 
 # ── background pipeline task ──────────────────────────────────────────────────
 
-_ANALYSIS_TIMEOUT_S = 15 * 60  # 15 minutes hard cap
+_ANALYSIS_TIMEOUT_S = 100 * 60  # 100 minutes — covers a full 90-min match + overhead
 
 
 async def _call_modal(
@@ -159,8 +159,8 @@ async def _call_modal(
         with open(video_path, "rb") as fh:
             video_bytes = fh.read()
 
-        # Timeout = video duration cap + 120s upload/cold-start buffer
-        http_timeout = max_duration_s + 120
+        # Timeout = video duration cap + 300s upload/cold-start buffer
+        http_timeout = max_duration_s + 300
         async with httpx.AsyncClient(timeout=http_timeout) as client:
             resp = await client.post(
                 MODAL_ENDPOINT,
@@ -180,8 +180,8 @@ async def _call_modal(
     return result
 
 
-_GPU_MAX_DURATION_S = 300.0   # 5-minute cap on Modal GPU
-_CPU_MAX_DURATION_S  = 30.0   # 30-second cap on Railway CPU fallback
+_GPU_MAX_DURATION_S  = 5400.0  # 90-minute cap — full match support
+_CPU_MAX_DURATION_S  = 120.0  # 2-minute cap for Railway CPU fallback (no GPU — not suitable for long videos)
 
 
 async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
@@ -232,7 +232,7 @@ async def _run_analysis(job_id: str, video_path: str, frame_skip: int,
                     _jobs[job_id] = {
                         "pct": 0, "stage": "error",
                         "error": f"Analysis timed out after {_ANALYSIS_TIMEOUT_S // 60} minutes. "
-                                 "Try a shorter clip (under 30 s) or increase frame skip.",
+                                 "Try increasing frame skip.",
                     }
                 return
             result_dict = result_obj.to_dict()
@@ -369,8 +369,8 @@ async def analyze(
     click_x / click_y are normalised 0-1 coordinates of the player the user
     selected in the frame. Returns {job_id}; poll GET /progress/{job_id}.
     """
-    if frame_skip < 1 or frame_skip > 10:
-        raise HTTPException(status_code=422, detail="frame_skip must be between 1 and 10")
+    if frame_skip < 1 or frame_skip > 20:
+        raise HTTPException(status_code=422, detail="frame_skip must be between 1 and 20")
 
     with _previews_lock:
         info = _previews.get(preview_id)
@@ -475,8 +475,8 @@ async def analyze_report(
     frame_skip: int = 10,
 ):
     """Upload a video and receive a personal performance PDF report."""
-    if frame_skip < 1 or frame_skip > 10:
-        raise HTTPException(status_code=422, detail="frame_skip must be between 1 and 10")
+    if frame_skip < 1 or frame_skip > 20:
+        raise HTTPException(status_code=422, detail="frame_skip must be between 1 and 20")
 
     job_id = str(uuid.uuid4())
     tmp_video = None
